@@ -89,6 +89,50 @@ class AddFilesWorker(QThread):
                 self.pdf_manager.add_file(path)
         self.done.emit()
 
+
+class RefreshWorker(QThread):
+    """Background worker to re-analyze all loaded PDF files."""
+    done = Signal()
+
+    def __init__(self, files):
+        super().__init__()
+        self.files = files
+
+    def run(self):
+        for f in self.files:
+            f._analyze()
+            if f.status == "Completed" or f.status.startswith("Failed"):
+                f.status = "Ready" if f.pages > 0 else "Failed"
+        self.done.emit()
+
+
+class UpdateCheckWorker(QThread):
+    """Background worker to check GitHub for a new release."""
+    update_ready = Signal(str)   # latest_version string
+    up_to_date = Signal(str)     # current version string
+    check_failed = Signal(str, int)  # error message, http code (0 if not http)
+
+    def __init__(self, version):
+        super().__init__()
+        self.version = version
+
+    def run(self):
+        try:
+            import urllib.request, urllib.error, json
+            url = "https://api.github.com/repos/avvoesport/pdf-print-manager/releases/latest"
+            req = urllib.request.Request(url, headers={'User-Agent': 'PDF-Print-Manager-Updater'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+            latest = data.get("tag_name", "")
+            if latest and latest != self.version:
+                self.update_ready.emit(latest)
+            else:
+                self.up_to_date.emit(self.version)
+        except urllib.error.HTTPError as e:
+            self.check_failed.emit(str(e), e.code)
+        except Exception as e:
+            self.check_failed.emit(str(e), 0)
+
 class FileFilterProxyModel(QSortFilterProxyModel):
     def __init__(self):
         super().__init__()
@@ -475,14 +519,11 @@ class MainWindow(QMainWindow):
 
     def on_refresh(self):
         self.lbl_status.setText("Refreshing files...")
-        QApplication.processEvents()
-        
-        for i, f in enumerate(self.pdf_manager.files):
-            f._analyze()
-            # Also reset print status so they can be reprinted
-            if f.status == "Completed" or f.status.startswith("Failed"):
-                f.status = "Ready" if f.pages > 0 else "Failed"
-                
+        self._refresh_worker = RefreshWorker(list(self.pdf_manager.files))
+        self._refresh_worker.done.connect(self._on_refresh_done)
+        self._refresh_worker.start()
+
+    def _on_refresh_done(self):
         self.table_model.refresh()
         self.update_stats()
         self.lbl_status.setText("Ready")
@@ -499,9 +540,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", last_folder)
         if folder:
             self.settings.set_last_folder(folder)
-            added = self.pdf_manager.add_folder(folder)
-            self.table_model.refresh()
-            self.update_stats()
+            self.add_paths([folder])
             
     def on_files_dropped(self, paths):
         self.add_paths(paths)
@@ -668,30 +707,38 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(f"Auto-imported {len(paths)} file(s) from Downloads.")
 
     def check_for_updates(self):
-        try:
-            url = "https://api.github.com/repos/avvoesport/pdf-print-manager/releases/latest"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode())
-                latest_version = data.get("tag_name", "")
-                
-            if latest_version and latest_version != VERSION:
-                reply = QMessageBox.question(
-                    self, 'Update Available',
-                    f"A new version ({latest_version}) is available!\nYou are currently running {VERSION}.\n\nDo you want to download the update?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-                )
-                if reply == QMessageBox.Yes:
-                    webbrowser.open("https://github.com/avvoesport/pdf-print-manager/releases/latest")
-            else:
-                QMessageBox.information(self, 'Up to Date', f"You are running the latest version ({VERSION}).")
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                QMessageBox.warning(self, 'Update Check Failed', "Could not find any releases.\n\nThis usually happens if:\n1. You haven't created a Release on GitHub yet.\n2. Your GitHub repository is set to Private. The updater requires the repository to be Public to check for updates.")
-            else:
-                QMessageBox.warning(self, 'Update Check Failed', f"Could not check for updates:\n{str(e)}")
-        except Exception as e:
-            QMessageBox.warning(self, 'Update Check Failed', f"Could not check for updates:\n{str(e)}")
+        self.btn_update.setEnabled(False)
+        self.btn_update.setText("Checking...")
+        self._update_worker = UpdateCheckWorker(VERSION)
+        self._update_worker.update_ready.connect(self._on_update_available)
+        self._update_worker.up_to_date.connect(self._on_up_to_date)
+        self._update_worker.check_failed.connect(self._on_update_failed)
+        self._update_worker.finished.connect(lambda: (
+            self.btn_update.setEnabled(True),
+            self.btn_update.setText("Check for Updates")
+        ))
+        self._update_worker.start()
+
+    def _on_update_available(self, latest_version):
+        reply = QMessageBox.question(
+            self, 'Update Available',
+            f"A new version ({latest_version}) is available!\nYou are currently running {VERSION}.\n\nDo you want to download the update?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            webbrowser.open("https://github.com/avvoesport/pdf-print-manager/releases/latest")
+
+    def _on_up_to_date(self, version):
+        QMessageBox.information(self, 'Up to Date', f"You are running the latest version ({version}).")
+
+    def _on_update_failed(self, error_msg, code):
+        if code == 404:
+            QMessageBox.warning(self, 'Update Check Failed',
+                "Could not find any releases.\n\nThis usually happens if:\n"
+                "1. You haven't created a Release on GitHub yet.\n"
+                "2. Your repository is Private (needs to be Public for the updater).")
+        else:
+            QMessageBox.warning(self, 'Update Check Failed', f"Could not check for updates:\n{error_msg}")
 
     def closeEvent(self, event):
         self.settings.save_window_geometry(self.saveGeometry())
