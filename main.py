@@ -5,7 +5,7 @@ from ui.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("PDF Print Manager")
+    app.setApplicationName("Printavvo")
     app.setOrganizationName("Kaliber")
     app.setOrganizationDomain("kaliber.local")
     

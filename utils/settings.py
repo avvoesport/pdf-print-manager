@@ -2,7 +2,7 @@ from PySide6.QtCore import QSettings
 
 class AppSettings:
     def __init__(self):
-        self.settings = QSettings("Kaliber", "PDF Print Manager")
+        self.settings = QSettings("Kaliber", "Printavvo")
 
     def get_last_folder(self):
         return self.settings.value("last_folder", "")

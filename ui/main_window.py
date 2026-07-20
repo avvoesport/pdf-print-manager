@@ -120,7 +120,7 @@ class UpdateCheckWorker(QThread):
         try:
             import urllib.request, urllib.error, json
             url = "https://api.github.com/repos/avvoesport/pdf-print-manager/releases/latest"
-            req = urllib.request.Request(url, headers={'User-Agent': 'PDF-Print-Manager-Updater'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'Printavvo-Updater'})
             with urllib.request.urlopen(req, timeout=10) as response:
                 data = json.loads(response.read().decode())
             latest = data.get("tag_name", "")
@@ -162,7 +162,7 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF Print Manager")
+        self.setWindowTitle("Printavvo")
         self.resize(1000, 700)
         
         self.settings = AppSettings()

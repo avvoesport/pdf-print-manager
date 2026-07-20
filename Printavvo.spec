@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='PDF_Print_Manager',
+    name='Printavvo',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
