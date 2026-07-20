@@ -630,6 +630,11 @@ class MainWindow(QMainWindow):
                     webbrowser.open("https://github.com/avvoesport/pdf-print-manager/releases/latest")
             else:
                 QMessageBox.information(self, 'Up to Date', f"You are running the latest version ({VERSION}).")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                QMessageBox.warning(self, 'Update Check Failed', "Could not find any releases.\n\nThis usually happens if:\n1. You haven't created a Release on GitHub yet.\n2. Your GitHub repository is set to Private. The updater requires the repository to be Public to check for updates.")
+            else:
+                QMessageBox.warning(self, 'Update Check Failed', f"Could not check for updates:\n{str(e)}")
         except Exception as e:
             QMessageBox.warning(self, 'Update Check Failed', f"Could not check for updates:\n{str(e)}")
 
