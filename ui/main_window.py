@@ -9,6 +9,10 @@ from PySide6.QtPrintSupport import QPrinterInfo, QPrinter
 import qdarktheme
 import datetime
 import os
+import json
+import urllib.request
+import urllib.error
+import webbrowser
 
 from core.pdf_manager import PDFManager
 from core.database import DatabaseManager
@@ -16,6 +20,8 @@ from core.print_worker import PrintWorker
 from core.watcher import DownloadsWatcher
 from utils.settings import AppSettings
 from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
+
+VERSION = "v1.0.0"
 
 class FileFilterProxyModel(QSortFilterProxyModel):
     def __init__(self):
@@ -99,6 +105,12 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(btn_select_all)
         toolbar_layout.addWidget(btn_deselect_all)
         toolbar_layout.addWidget(btn_refresh)
+        
+        self.btn_update = QPushButton("Check for Updates")
+        self.btn_update.setStyleSheet("font-weight: bold; color: #ffffff; background-color: #007bff; border: none; padding: 5px 10px;")
+        self.btn_update.clicked.connect(self.check_for_updates)
+        toolbar_layout.addWidget(self.btn_update)
+        
         toolbar_layout.addWidget(self.btn_theme)
         toolbar_layout.addWidget(self.check_today)
         toolbar_layout.addWidget(self.check_auto_import)
@@ -597,6 +609,27 @@ class MainWindow(QMainWindow):
     def on_auto_imported_files(self, paths):
         self.add_paths(paths)
         self.lbl_status.setText(f"Auto-imported {len(paths)} file(s) from Downloads.")
+
+    def check_for_updates(self):
+        try:
+            url = "https://api.github.com/repos/avvoesport/pdf-print-manager/releases/latest"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                latest_version = data.get("tag_name", "")
+                
+            if latest_version and latest_version != VERSION:
+                reply = QMessageBox.question(
+                    self, 'Update Available',
+                    f"A new version ({latest_version}) is available!\nYou are currently running {VERSION}.\n\nDo you want to download the update?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    webbrowser.open("https://github.com/avvoesport/pdf-print-manager/releases/latest")
+            else:
+                QMessageBox.information(self, 'Up to Date', f"You are running the latest version ({VERSION}).")
+        except Exception as e:
+            QMessageBox.warning(self, 'Update Check Failed', f"Could not check for updates:\n{str(e)}")
 
     def closeEvent(self, event):
         self.settings.save_window_geometry(self.saveGeometry())
