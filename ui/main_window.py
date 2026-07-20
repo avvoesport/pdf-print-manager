@@ -21,8 +21,6 @@ from core.watcher import DownloadsWatcher
 from utils.settings import AppSettings
 from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
 
-from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
-
 VERSION = "v1.1.0"
 
 
