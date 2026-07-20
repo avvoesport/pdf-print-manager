@@ -111,16 +111,28 @@ class PrintWorker(QThread):
                 printer.setCopyCount(copies)
                 printer.setColorMode(QPrinter.Color if color_mode == "Color" else QPrinter.GrayScale)
                 
+                doc = fitz.open(pdf_file.filepath)
                 current_duplex = duplex_mode if pdf_file.duplex == "Global" else pdf_file.duplex
                 
-                if current_duplex == "Flip on Long Edge":
+                if current_duplex == "Duplex (Auto)":
+                    is_landscape = False
+                    if doc.page_count > 0:
+                        first_page = doc[0]
+                        if first_page.rect.width > first_page.rect.height:
+                            is_landscape = True
+                    
+                    if is_landscape:
+                        printer.setDuplex(QPrinter.DuplexShortSide)
+                    else:
+                        printer.setDuplex(QPrinter.DuplexLongSide)
+                elif current_duplex == "Flip on Long Edge":
                     printer.setDuplex(QPrinter.DuplexLongSide)
                 elif current_duplex == "Flip on Short Edge":
                     printer.setDuplex(QPrinter.DuplexShortSide)
                 else:
                     printer.setDuplex(QPrinter.DuplexNone)
 
-                doc = fitz.open(pdf_file.filepath)
+
                 pages_to_print = self.parse_custom_pages(pdf_file.custom_pages, doc.page_count)
                 if not pages_to_print:
                     pages_to_print = list(range(doc.page_count))

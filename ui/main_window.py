@@ -21,7 +21,9 @@ from core.watcher import DownloadsWatcher
 from utils.settings import AppSettings
 from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
 
-VERSION = "v1.0.0"
+from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
+
+VERSION = "v1.1.0"
 
 class FileFilterProxyModel(QSortFilterProxyModel):
     def __init__(self):
@@ -139,7 +141,7 @@ class MainWindow(QMainWindow):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
             
         # Set Duplex delegate (Column 6)
-        duplex_delegate = ComboBoxDelegate(self.table_view, ["Global", "Single Side", "Flip on Long Edge", "Flip on Short Edge"])
+        duplex_delegate = ComboBoxDelegate(self.table_view, ["Global", "Single Side", "Duplex (Auto)", "Flip on Long Edge", "Flip on Short Edge"])
         self.table_view.setItemDelegateForColumn(6, duplex_delegate)
             
         left_layout.addWidget(self.table_view)
@@ -179,7 +181,7 @@ class MainWindow(QMainWindow):
         duplex_layout = QHBoxLayout()
         duplex_layout.addWidget(QLabel("Duplex (Global):"))
         self.combo_duplex = QComboBox()
-        self.combo_duplex.addItems(["Single Side", "Flip on Long Edge", "Flip on Short Edge"])
+        self.combo_duplex.addItems(["Single Side", "Duplex (Auto)", "Flip on Long Edge", "Flip on Short Edge"])
         duplex_layout.addWidget(self.combo_duplex)
         settings_layout.addLayout(duplex_layout)
         
