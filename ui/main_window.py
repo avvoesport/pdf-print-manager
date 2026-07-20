@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QSpinBox, QDoubleSpinBox, QRadioButton, QLineEdit, QLabel, 
                                QFileDialog, QProgressBar, QMessageBox, QHeaderView,
                                QMenu, QApplication, QCheckBox)
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QUrl
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QUrl, QThread, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtPrintSupport import QPrinterInfo, QPrinter
 import qdarktheme
@@ -24,6 +24,72 @@ from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBox
 from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
 
 VERSION = "v1.1.0"
+
+
+class PrinterInfoWorker(QThread):
+    """Background worker to fetch printer paper sources without blocking the UI."""
+    sources_ready = Signal(list)  # emits list of (name, id) tuples
+
+    def __init__(self, printer_name):
+        super().__init__()
+        self.printer_name = printer_name
+
+    def run(self):
+        try:
+            from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
+            info = QPrinterInfo.printerInfo(self.printer_name)
+            p = QPrinter(info)
+            sources = p.supportedPaperSources()
+
+            native_trays = {}
+            try:
+                from utils.win_printer import get_printer_trays
+                trays = get_printer_trays(self.printer_name)
+                for t in trays:
+                    native_trays[t["id"]] = t["name"]
+            except Exception:
+                pass
+
+            result = []
+            if not sources:
+                result.append(("Auto", 6))
+            else:
+                for s in sources:
+                    val = s.value
+                    name = native_trays.get(val)
+                    if not name:
+                        name = str(s).split('.')[-1].replace('>', '')
+                        if name.isdigit():
+                            num = int(name)
+                            if num == 257: name = "Tray 1"
+                            elif num == 258: name = "Tray 2"
+                            elif num == 259: name = "Tray 3"
+                            elif num == 260: name = "Tray 4"
+                            elif num == 261: name = "Bypass Tray"
+                            elif num == 262: name = "Tray 6"
+                            else: name = f"Tray {num - 256}"
+                    result.append((name, val))
+            self.sources_ready.emit(result)
+        except Exception:
+            self.sources_ready.emit([("Auto", 6)])
+
+
+class AddFilesWorker(QThread):
+    """Background worker to analyze and add PDF files without blocking the UI."""
+    done = Signal()
+
+    def __init__(self, pdf_manager, paths):
+        super().__init__()
+        self.pdf_manager = pdf_manager
+        self.paths = paths
+
+    def run(self):
+        for path in self.paths:
+            if os.path.isdir(path):
+                self.pdf_manager.add_folder(path)
+            elif path.lower().endswith('.pdf'):
+                self.pdf_manager.add_file(path)
+        self.done.emit()
 
 class FileFilterProxyModel(QSortFilterProxyModel):
     def __init__(self):
@@ -300,43 +366,9 @@ class MainWindow(QMainWindow):
             self.combo_printers.addItem(printer.printerName())
 
     def populate_paper_sources(self):
-        printer_name = self.combo_printers.currentText()
-        if not printer_name: return
-        
-        info = QPrinterInfo.printerInfo(printer_name)
-        p = QPrinter(info)
-        
-        self.combo_paper_source.clear()
-        sources = p.supportedPaperSources()
-        if not sources:
-            self.combo_paper_source.addItem("Auto", 6)
-            return
-            
-        native_trays = {}
-        try:
-            from utils.win_printer import get_printer_trays
-            trays = get_printer_trays(printer_name)
-            for t in trays:
-                native_trays[t["id"]] = t["name"]
-        except Exception:
-            pass
-            
-        for s in sources:
-            val = s.value
-            name = native_trays.get(val)
-            if not name:
-                name = str(s).split('.')[-1].replace('>', '')
-                if name.isdigit():
-                    num = int(name)
-                    # Fuji Xerox / Generic Custom Tray Mapping
-                    if num == 257: name = "Tray 1"
-                    elif num == 258: name = "Tray 2"
-                    elif num == 259: name = "Tray 3"
-                    elif num == 260: name = "Tray 4"
-                    elif num == 261: name = "Bypass Tray"
-                    elif num == 262: name = "Tray 6"
-                    else: name = f"Tray {num - 256}"
-            self.combo_paper_source.addItem(name, val)
+        """Initial synchronous populate (used at startup)."""
+        # Trigger async load
+        self.on_printer_changed()
 
     def on_paper_changed(self):
         is_custom = self.combo_paper.currentText() == "Custom"
@@ -344,7 +376,31 @@ class MainWindow(QMainWindow):
         self.spin_custom_h.setVisible(is_custom)
 
     def on_printer_changed(self):
-        self.populate_paper_sources()
+        """Load paper sources in background so UI doesn't freeze."""
+        printer_name = self.combo_printers.currentText()
+        if not printer_name:
+            return
+        self.combo_paper_source.clear()
+        self.combo_paper_source.addItem("Loading...", None)
+        self.combo_paper_source.setEnabled(False)
+
+        self._printer_info_worker = PrinterInfoWorker(printer_name)
+        self._printer_info_worker.sources_ready.connect(self._on_sources_ready)
+        self._printer_info_worker.start()
+
+    def _on_sources_ready(self, sources):
+        """Called from background thread result — safe to update UI."""
+        self.combo_paper_source.clear()
+        for name, val in sources:
+            self.combo_paper_source.addItem(name, val)
+        self.combo_paper_source.setEnabled(True)
+        # Restore saved paper source if pending
+        pending = getattr(self, '_pending_paper_source_id', None)
+        if pending is not None:
+            idx = self.combo_paper_source.findData(pending)
+            if idx >= 0:
+                self.combo_paper_source.setCurrentIndex(idx)
+            self._pending_paper_source_id = None
 
     def load_settings_to_ui(self):
         printer = self.settings.get_printer_name()
@@ -367,10 +423,8 @@ class MainWindow(QMainWindow):
         self.spin_copies.setValue(self.settings.get_copies())
         
         self.populate_paper_sources()
-        source_id = self.settings.get_paper_source_id()
-        idx = self.combo_paper_source.findData(source_id)
-        if idx >= 0:
-            self.combo_paper_source.setCurrentIndex(idx)
+        # Paper source is restored asynchronously after sources load
+        self._pending_paper_source_id = self.settings.get_paper_source_id()
         
         # Apply Theme
         theme = self.settings.get_theme()
@@ -455,13 +509,16 @@ class MainWindow(QMainWindow):
         self.add_paths(paths)
 
     def add_paths(self, paths):
-        for path in paths:
-            if os.path.isdir(path):
-                self.pdf_manager.add_folder(path)
-            elif path.lower().endswith('.pdf'):
-                self.pdf_manager.add_file(path)
+        """Add files in background to avoid freezing the UI."""
+        self.lbl_status.setText("Adding files...")
+        self._add_worker = AddFilesWorker(self.pdf_manager, paths)
+        self._add_worker.done.connect(self._on_add_done)
+        self._add_worker.start()
+
+    def _on_add_done(self):
         self.table_model.refresh()
         self.update_stats()
+        self.lbl_status.setText("Ready")
 
     def on_remove_selected(self):
         indexes = self.table_view.selectionModel().selectedRows()
