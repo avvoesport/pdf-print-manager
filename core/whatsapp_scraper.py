@@ -168,49 +168,122 @@ class WhatsAppScraper(QThread):
                 return []
 
             items[chat_index].click()
-            time.sleep(2)   # let chat load
+            time.sleep(2.5)   # let chat load
 
             self.status_update.emit("Scrolling to load messages…")
-            # Scroll up to load more history (up to ~10 times)
-            msg_panel = page.query_selector("div[role='application']")
-            for _ in range(10):
-                if msg_panel:
-                    msg_panel.evaluate("el => el.scrollTop = 0")
-                    time.sleep(0.8)
+            # Scroll the main chat pane up to load more history
+            for _ in range(8):
+                page.keyboard.press("PageUp")
+                time.sleep(0.6)
 
+            time.sleep(1)
             self.status_update.emit("Looking for files…")
 
-            # -------- Download PDFs --------
-            pdf_links = page.query_selector_all("a[href*='.pdf'], span[data-testid='document-thumb']")
-            for el in pdf_links:
-                try:
-                    with page.expect_download(timeout=15000) as dl_info:
-                        el.click()
-                    dl = dl_info.value
-                    dest = os.path.join(DOWNLOAD_TEMP_DIR, dl.suggested_filename or f"wa_doc_{int(time.time())}.pdf")
-                    dl.save_as(dest)
-                    downloaded.append(dest)
-                    self.status_update.emit(f"Downloaded: {dl.suggested_filename}")
-                except Exception:
-                    pass
-
-            # -------- Download images via download button --------
-            img_buttons = page.query_selector_all("div[data-testid='media-download-button'], button[aria-label='Download']")
-            for btn in img_buttons:
-                try:
-                    with page.expect_download(timeout=15000) as dl_info:
-                        btn.click()
-                    dl = dl_info.value
-                    fname = dl.suggested_filename or f"wa_img_{int(time.time())}.jpg"
-                    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf')):
+            # -------- Strategy 1: Document/PDF attachments --------
+            # WhatsApp renders PDF docs with a clickable download button inside the message bubble.
+            # The download span has data-icon="download" or data-testid contains "download"
+            doc_selectors = [
+                "span[data-testid='document-download-icon']",
+                "div[data-testid='document-thumb'] span[data-icon='download']",
+                "span[data-icon='download-audio']",
+                # Broad fallback — any download icon inside a message
+                "div[data-testid='msg-container'] span[data-icon='download']",
+            ]
+            for sel in doc_selectors:
+                btns = page.query_selector_all(sel)
+                for btn in btns:
+                    try:
+                        with page.expect_download(timeout=12000) as dl_info:
+                            btn.click()
+                        dl = dl_info.value
+                        fname = dl.suggested_filename or f"wa_doc_{int(time.time())}"
                         dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
                         dl.save_as(dest)
                         downloaded.append(dest)
                         self.status_update.emit(f"Downloaded: {fname}")
-                except Exception:
-                    pass
+                        time.sleep(0.5)
+                    except Exception:
+                        pass
+
+            # -------- Strategy 2: JavaScript — find ALL download buttons --------
+            # Use JS to grab every button/span that has a download icon data attribute
+            try:
+                download_btns = page.evaluate("""
+                    () => {
+                        const results = [];
+                        // Find all elements with data-icon containing 'download'
+                        const els = document.querySelectorAll('[data-icon]');
+                        els.forEach((el, i) => {
+                            const icon = el.getAttribute('data-icon') || '';
+                            if (icon.includes('download')) {
+                                results.push(i);
+                            }
+                        });
+                        return results;
+                    }
+                """)
+                all_icon_els = page.query_selector_all("[data-icon]")
+                for idx in (download_btns or []):
+                    if idx < len(all_icon_els):
+                        el = all_icon_els[idx]
+                        try:
+                            with page.expect_download(timeout=12000) as dl_info:
+                                el.click()
+                            dl = dl_info.value
+                            fname = dl.suggested_filename or f"wa_file_{int(time.time())}"
+                            dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
+                            dl.save_as(dest)
+                            if dest not in downloaded:
+                                downloaded.append(dest)
+                                self.status_update.emit(f"Downloaded: {fname}")
+                            time.sleep(0.5)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # -------- Strategy 3: Image thumbnails — hover then download --------
+            # Images in WhatsApp show a download button on hover
+            try:
+                img_msgs = page.query_selector_all(
+                    "img[src*='blob:'], "
+                    "div[data-testid='media-url-provider'] img, "
+                    "div[class*='message-image'] img"
+                )
+                for img in img_msgs[:20]:  # limit to 20 images
+                    try:
+                        img.hover()
+                        time.sleep(0.4)
+                        # After hover, look for a download button that appeared
+                        dl_btn = page.query_selector(
+                            "button[aria-label*='Download'], "
+                            "div[role='button'][aria-label*='Download']"
+                        )
+                        if dl_btn:
+                            with page.expect_download(timeout=10000) as dl_info:
+                                dl_btn.click()
+                            dl = dl_info.value
+                            fname = dl.suggested_filename or f"wa_img_{int(time.time())}.jpg"
+                            dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
+                            dl.save_as(dest)
+                            if dest not in downloaded:
+                                downloaded.append(dest)
+                                self.status_update.emit(f"Downloaded: {fname}")
+                            time.sleep(0.3)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         except Exception as e:
             self.error.emit(f"Error while scraping chat:\n{str(e)}")
 
-        return downloaded
+        # Deduplicate by path
+        seen = set()
+        unique = []
+        for p in downloaded:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+        return unique
+
