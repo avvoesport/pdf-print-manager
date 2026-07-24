@@ -51,12 +51,23 @@ class WhatsAppScraper(QThread):
                     accept_downloads=True,
                     args=[
                         "--no-sandbox",
-                        "--start-minimized",       # Run in background (minimized)
+                        "--start-minimized",       # Best effort initial minimize
                         "--window-size=1100,780",
                     ],
                     viewport={"width": 1100, "height": 780},
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+
+                # Force minimize via Chrome DevTools Protocol (CDP) for Windows
+                try:
+                    client = context.new_cdp_session(page)
+                    info = client.send("Browser.getWindowForTarget")
+                    client.send("Browser.setWindowBounds", {
+                        "windowId": info["windowId"],
+                        "bounds": {"windowState": "minimized"}
+                    })
+                except Exception as e:
+                    self.status_update.emit(f"Warning: Could not force minimize: {e}")
 
                 page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
                 self.status_update.emit("Waiting for WhatsApp Web to load…")
