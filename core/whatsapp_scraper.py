@@ -153,13 +153,8 @@ class WhatsAppScraper(QThread):
             self.status_update.emit(msg)
 
         _log(f"--- Starting scrape for chat index {chat_index} ---")
+        # This list will hold tuples of (Download_Object, Date_String)
         collected = []
-
-        def _on_download(dl):
-            _log(f"Download triggered: {dl.suggested_filename}")
-            collected.append(dl)
-
-        page.on("download", _on_download)
 
         try:
             # 1. Click the chat
@@ -188,7 +183,7 @@ class WhatsAppScraper(QThread):
                 time.sleep(0.5)
             time.sleep(1)
 
-            # 3. Download PDFs (Documents) sequentially
+            # 3. Download PDFs (Documents)
             _log("Scanning for PDF documents...")
             pdf_locators = page.locator("div[role='button']").filter(has_text=re.compile(r"\.pdf", re.IGNORECASE))
             pdf_count = pdf_locators.count()
@@ -198,121 +193,163 @@ class WhatsAppScraper(QThread):
                 _log(f"Processing PDF {i+1} of {pdf_count}...")
                 try:
                     bubble = pdf_locators.nth(i)
+                    date_str = bubble.evaluate("""el => {
+                        let curr = el;
+                        while(curr && curr.getAttribute('role') !== 'row') curr = curr.parentElement;
+                        if (!curr) return null;
+                        let pre = curr.getAttribute('data-pre-plain-text');
+                        if (pre) {
+                            let m = pre.match(/\\[.*?, (.*?)\\]/);
+                            if (m) return m[1];
+                        }
+                        let prev = curr.previousElementSibling;
+                        while (prev) {
+                            if (prev.innerText && prev.innerText.length < 20) {
+                                let text = prev.innerText.trim();
+                                if (text === 'TODAY' || text === 'YESTERDAY' || text.match(/^\\d{2}\\/\\d{2}\\/\\d{4}$/) || text.match(/^[A-Za-z]+day$/)) return text;
+                            }
+                            prev = prev.previousElementSibling;
+                        }
+                        return null;
+                    }""")
                     
-                    # Look for explicit download icon inside the bubble
                     dl_icon = bubble.locator("[data-icon*='download'], [aria-label*='Download']")
                     if dl_icon.count() > 0:
-                        dl_icon.first.click(timeout=1000)
-                        _log("Clicked explicit download icon on PDF.")
-                        time.sleep(1)
-                        continue # Already downloaded directly, no viewer opened
-                    
-                    # Otherwise, click the bubble to open the PDF viewer
-                    bubble.click(timeout=2000)
-                    time.sleep(1.5)
-                    
-                    # Click download inside viewer
-                    dl_btns = page.locator("[data-icon*='download'], [aria-label*='Download'], [aria-label*='unduh']")
-                    if dl_btns.count() > 0:
-                        dl_btns.first.click(timeout=2000)
-                        _log("Clicked download button in PDF viewer.")
-                        time.sleep(1)
-                    
-                    # Close viewer
-                    page.keyboard.press("Escape")
-                    time.sleep(0.8)
+                        with page.expect_download(timeout=5000) as dl_info:
+                            dl_icon.first.click(timeout=1000)
+                        collected.append((dl_info.value, date_str))
+                    else:
+                        bubble.click(timeout=2000)
+                        time.sleep(1.5)
+                        dl_btns = page.locator("[data-icon*='download'], [aria-label*='Download'], [aria-label*='unduh']")
+                        if dl_btns.count() > 0:
+                            with page.expect_download(timeout=5000) as dl_info:
+                                dl_btns.first.click(timeout=2000)
+                            collected.append((dl_info.value, date_str))
+                        page.keyboard.press("Escape")
+                        time.sleep(0.8)
                 except Exception as e:
                     _log(f"Error on PDF {i+1}: {str(e)}")
                     try: page.keyboard.press("Escape") 
                     except: pass
 
-            # 4. Download images by opening image viewer
+            # 4. Download images
             _log("Scanning for images...")
             images = page.locator("img[src^='blob:']")
             img_count = images.count()
-            _log(f"Found {img_count} image(s) in chat.")
-            
             for i in range(img_count):
                 _log(f"Processing image {i+1} of {img_count}...")
                 try:
-                    images.nth(i).click(timeout=2000) # Open image viewer
-                    time.sleep(1.2)
+                    img_el = images.nth(i)
+                    date_str = img_el.evaluate("""el => {
+                        let curr = el;
+                        while(curr && curr.getAttribute('role') !== 'row') curr = curr.parentElement;
+                        if (!curr) return null;
+                        let pre = curr.getAttribute('data-pre-plain-text');
+                        if (pre) {
+                            let m = pre.match(/\\[.*?, (.*?)\\]/);
+                            if (m) return m[1];
+                        }
+                        let prev = curr.previousElementSibling;
+                        while (prev) {
+                            if (prev.innerText && prev.innerText.length < 20) {
+                                let text = prev.innerText.trim();
+                                if (text === 'TODAY' || text === 'YESTERDAY' || text.match(/^\\d{2}\\/\\d{2}\\/\\d{4}$/) || text.match(/^[A-Za-z]+day$/)) return text;
+                            }
+                            prev = prev.previousElementSibling;
+                        }
+                        return null;
+                    }""")
                     
-                    # Click the download button in the viewer
+                    img_el.click(timeout=2000)
+                    time.sleep(1.2)
                     dl_btns = page.locator("[data-icon*='download'], [aria-label*='Download'], [aria-label*='unduh']")
                     if dl_btns.count() > 0:
-                        dl_btns.first.click(timeout=2000)
-                        _log("Clicked image download button.")
-                        time.sleep(1)
-                    else:
-                        _log("No download button found for this image.")
-                    
-                    page.keyboard.press("Escape") # Close viewer
+                        with page.expect_download(timeout=5000) as dl_info:
+                            dl_btns.first.click(timeout=2000)
+                        collected.append((dl_info.value, date_str))
+                    page.keyboard.press("Escape")
                     time.sleep(0.8)
                 except Exception as e:
                     _log(f"Error on image {i+1}: {str(e)}")
                     try: page.keyboard.press("Escape") 
                     except: pass
 
-            # 5. Fallback: click explicit download arrows
-            _log("Checking for any missed explicit download buttons...")
-            fallback_clicks = page.evaluate("""
-                () => {
-                    let clicked = 0;
-                    document.querySelectorAll('[data-icon*="download"], [aria-label*="Download"]').forEach(el => {
-                        try { el.click(); clicked++; } catch(e) {}
-                    });
-                    return clicked;
-                }
-            """)
-            _log(f"Triggered {fallback_clicks} fallback download(s).")
-            
-            _log("Waiting 4 seconds for downloads to complete...")
-            time.sleep(4)
-
         except Exception as e:
             _log(f"Fatal scrape error: {str(e)}")
             self.error.emit(f"Error while scraping:\n{str(e)}")
-        finally:
-            page.remove_listener("download", _on_download)
 
-        # 6. Save all collected downloads, deduplicate by MD5 hash
+        # 6. Save all collected downloads
         import hashlib
         allowed = ('.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff')
         saved = []
         seen_names = set()
         seen_hashes = set()
 
-        for dl in collected:
+        for dl_item in collected:
             try:
+                # dl_item is a tuple (Download, date_str)
+                dl, date_str = dl_item
+                
                 fname = dl.suggested_filename or f"wa_file_{int(time.time())}"
                 if not any(fname.lower().endswith(ext) for ext in allowed):
                     continue
-
-                # Give unique filename if collision
-                base = fname
-                counter = 1
-                while fname in seen_names:
-                    stem, ext = os.path.splitext(base)
-                    fname = f"{stem}_{counter}{ext}"
-                    counter += 1
-                seen_names.add(fname)
-
+                    
                 dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
-                dl.save_as(dest)
-
-                # Deduplicate by content hash — discard if we've seen this file before
-                file_hash = hashlib.md5(open(dest, 'rb').read()).hexdigest()
-                if file_hash in seen_hashes:
-                    os.remove(dest)   # remove the duplicate
-                    self.status_update.emit(f"Skipped duplicate: {fname}")
+                
+                # If file exists, we check hash to deduplicate
+                dl_path = dl.path()
+                if not dl_path:
                     continue
-
+                    
+                with open(dl_path, 'rb') as f:
+                    file_hash = hashlib.md5(f.read()).hexdigest()
+                    
+                if file_hash in seen_hashes:
+                    _log(f"Skipping identical file (already saved): {fname}")
+                    continue
+                    
                 seen_hashes.add(file_hash)
+                
+                # Make name unique just in case another file has same name but different content
+                base, ext = os.path.splitext(fname)
+                counter = 1
+                while dest in seen_names or os.path.exists(dest):
+                    dest = os.path.join(DOWNLOAD_TEMP_DIR, f"{base}_{counter}{ext}")
+                    counter += 1
+                
+                dl.save_as(dest)
+                seen_names.add(dest)
                 saved.append(dest)
-                self.status_update.emit(f"Saved: {fname}")
-            except Exception:
-                pass
+                _log(f"Saved: {os.path.basename(dest)} (Date: {date_str})")
+                
+                # If we scraped a date, change the file's modification time!
+                if date_str:
+                    try:
+                        from datetime import datetime
+                        parsed_date = None
+                        ds = date_str.upper().strip()
+                        today = datetime.now()
+                        if ds == "TODAY":
+                            parsed_date = today
+                        elif ds == "YESTERDAY":
+                            from datetime import timedelta
+                            parsed_date = today - timedelta(days=1)
+                        elif re.match(r"^\d{2}/\d{2}/\d{4}$", ds):
+                            # e.g. 10/07/2026
+                            parts = ds.split('/')
+                            # Assumes DD/MM/YYYY
+                            parsed_date = datetime(int(parts[2]), int(parts[1]), int(parts[0]), 12, 0, 0)
+                            
+                        if parsed_date:
+                            ts = parsed_date.timestamp()
+                            os.utime(dest, (ts, ts))
+                            _log(f"Set file modification time to {parsed_date}")
+                    except Exception as date_e:
+                        _log(f"Failed to set date {date_str}: {date_e}")
+                
+            except Exception as e:
+                _log(f"Failed to process download: {str(e)}")
 
         return saved
 
