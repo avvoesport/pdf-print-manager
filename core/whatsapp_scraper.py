@@ -188,21 +188,43 @@ class WhatsAppScraper(QThread):
                 time.sleep(0.5)
             time.sleep(1)
 
-            # 3. Download PDFs via fast Javascript
+            # 3. Download PDFs (Documents) sequentially
             _log("Scanning for PDF documents...")
-            pdf_clicks = page.evaluate("""
-                () => {
-                    let clicked = 0;
-                    document.querySelectorAll('div[role="button"]').forEach(el => {
-                        if (el.textContent && el.textContent.toLowerCase().includes('.pdf')) {
-                            try { el.click(); clicked++; } catch(e) {}
-                        }
-                    });
-                    return clicked;
-                }
-            """)
-            _log(f"Clicked {pdf_clicks} PDF document bubble(s).")
-            time.sleep(2)
+            pdf_locators = page.locator("div[role='button']").filter(has_text=re.compile(r"\.pdf", re.IGNORECASE))
+            pdf_count = pdf_locators.count()
+            _log(f"Found {pdf_count} PDF document bubble(s).")
+            
+            for i in range(pdf_count):
+                _log(f"Processing PDF {i+1} of {pdf_count}...")
+                try:
+                    bubble = pdf_locators.nth(i)
+                    
+                    # Look for explicit download icon inside the bubble
+                    dl_icon = bubble.locator("[data-icon*='download'], [aria-label*='Download']")
+                    if dl_icon.count() > 0:
+                        dl_icon.first.click(timeout=1000)
+                        _log("Clicked explicit download icon on PDF.")
+                        time.sleep(1)
+                        continue # Already downloaded directly, no viewer opened
+                    
+                    # Otherwise, click the bubble to open the PDF viewer
+                    bubble.click(timeout=2000)
+                    time.sleep(1.5)
+                    
+                    # Click download inside viewer
+                    dl_btns = page.locator("[data-icon*='download'], [aria-label*='Download'], [aria-label*='unduh']")
+                    if dl_btns.count() > 0:
+                        dl_btns.first.click(timeout=2000)
+                        _log("Clicked download button in PDF viewer.")
+                        time.sleep(1)
+                    
+                    # Close viewer
+                    page.keyboard.press("Escape")
+                    time.sleep(0.8)
+                except Exception as e:
+                    _log(f"Error on PDF {i+1}: {str(e)}")
+                    try: page.keyboard.press("Escape") 
+                    except: pass
 
             # 4. Download images by opening image viewer
             _log("Scanning for images...")
