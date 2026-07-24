@@ -185,12 +185,10 @@ class WhatsAppDialog(QDialog):
     def _on_files_scraped(self, paths: list):
         self.progress.setVisible(False)
         self.btn_scrape.setText("⬇  Import Files from Selected Chat")
+        self.btn_scrape.setEnabled(True)
 
         if not paths:
-            QMessageBox.information(self, "No Files Found",
-                "No PDF or image files were found in this chat.\n"
-                "Make sure media has been sent and try scrolling up in the chat first.")
-            self.btn_scrape.setEnabled(True)
+            self.lbl_status.setText("No files found. Try another chat or scroll up in the chat first.")
             return
 
         # Only accept PDFs and common image types
@@ -199,13 +197,9 @@ class WhatsAppDialog(QDialog):
 
         if valid:
             self.files_imported.emit(valid)
-            QMessageBox.information(self, "Import Complete",
-                f"{len(valid)} file(s) have been added to Printavvo!")
-            self.accept()
+            self.lbl_status.setText(f"✅ {len(valid)} file(s) added to Printavvo! Select another chat or close.")
         else:
-            QMessageBox.warning(self, "No Printable Files",
-                "Files were downloaded but none were printable PDFs or images.")
-            self.btn_scrape.setEnabled(True)
+            self.lbl_status.setText("Files downloaded but none were printable PDFs or images.")
 
     def _on_error(self, msg: str):
         self.progress.setVisible(False)

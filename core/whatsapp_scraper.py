@@ -70,15 +70,16 @@ class WhatsAppScraper(QThread):
                 page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
                 self.status_update.emit("Waiting for WhatsApp Web to load…")
 
-                # ---------- Wait for login or chat list ----------
+                # ---------- Wait for login ----------
                 logged = self._wait_for_login(page, PWTimeout)
                 if not logged:
+                    context.close()
                     return
 
                 self.logged_in.emit()
                 self.status_update.emit("Logged in! Loading chats…")
 
-                # ---------- Wait for chat list to appear ----------
+                # ---------- Wait for chat list ----------
                 try:
                     page.wait_for_selector("div[aria-label='Chat list']", timeout=20000)
                 except PWTimeout:
@@ -86,32 +87,40 @@ class WhatsAppScraper(QThread):
                     context.close()
                     return
 
-                if self._action == "login":
-                    # Just logged in — now load contacts
-                    self._action = "list_contacts"
+                # ---------- Initial contact load ----------
+                contacts = self._get_contacts(page)
+                self.contacts_ready.emit(contacts)
+                self.status_update.emit(f"Found {len(contacts)} chats. Select one to import.")
 
-                if self._action == "list_contacts":
-                    contacts = self._get_contacts(page)
-                    self.contacts_ready.emit(contacts)
-                    self.status_update.emit(f"Found {len(contacts)} chats. Select one to scrape.")
+                # ---------- Persistent event loop ----------
+                # Browser stays open until the dialog is closed (interruption requested)
+                self._action = "idle"
+                while not self.isInterruptionRequested():
+                    time.sleep(0.3)
 
-                    # Park here waiting for scrape instruction
-                    while self._action != "scrape":
-                        time.sleep(0.3)
-                        if self.isInterruptionRequested():
-                            context.close()
-                            return
+                    if self._action == "list_contacts":
+                        self._action = "idle"
+                        self.status_update.emit("Refreshing chats…")
+                        contacts = self._get_contacts(page)
+                        self.contacts_ready.emit(contacts)
+                        self.status_update.emit(f"Found {len(contacts)} chats. Select one to import.")
 
-                if self._action == "scrape" and self._target_chat_index is not None:
-                    self.status_update.emit("Opening chat…")
-                    files = self._scrape_chat(page, self._target_chat_index, PWTimeout)
-                    self.files_scraped.emit(files)
-                    self.status_update.emit(f"Done! {len(files)} file(s) imported.")
+                    elif self._action == "scrape" and self._target_chat_index is not None:
+                        idx = self._target_chat_index
+                        self._target_chat_index = None
+                        self._action = "idle"
+                        files = self._scrape_chat(page, idx, PWTimeout)
+                        self.files_scraped.emit(files)
+                        if files:
+                            self.status_update.emit(f"Done! {len(files)} file(s) imported.")
+                        else:
+                            self.status_update.emit("No files found in this chat. Try another chat.")
 
                 context.close()
 
         except Exception as e:
             self.error.emit(f"WhatsApp scraper error:\n{str(e)}")
+
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
