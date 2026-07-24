@@ -152,73 +152,75 @@ class WhatsAppScraper(QThread):
             for _ in range(8):
                 page.keyboard.press("PageUp")
                 time.sleep(0.5)
-            time.sleep(1)
-
-            # --- Extract Date JS ---
-            JS_EXTRACT_DATE = """el => {
-                let curr = el;
-                while(curr && curr.getAttribute('role') !== 'row') curr = curr.parentElement;
-                if (!curr) return null;
-                let pre = curr.getAttribute('data-pre-plain-text');
-                if (pre) {
-                    let m = pre.match(/\\[.*?, (.*?)\\]/);
-                    if (m) return m[1];
-                }
-                let prev = curr.previousElementSibling;
-                while (prev) {
-                    if (prev.innerText && prev.innerText.length < 20) {
-                        let text = prev.innerText.trim();
-                        if (text === 'TODAY' || text === 'YESTERDAY' || text.match(/^\\d{2}\\/\\d{2}\\/\\d{4}$/) || text.match(/^[A-Za-z]+day$/)) return text;
+            time            # --- Extract DOM sequentially ---
+            self.status_update.emit("Indexing chat messages (Texts, PDFs, Images)...")
+            
+            JS_INDEX_CHAT = """() => {
+                let results = [];
+                let rows = document.querySelectorAll('div[role="row"]');
+                rows.forEach((row, index) => {
+                    let item_id = "printavvo_msg_" + index;
+                    row.setAttribute('data-printavvo-id', item_id);
+                    
+                    let dateStr = null;
+                    let curr = row;
+                    let pre = curr.getAttribute('data-pre-plain-text');
+                    if (pre) {
+                        let m = pre.match(/\\[.*?, (.*?)\\]/);
+                        if (m) dateStr = m[1];
                     }
-                    prev = prev.previousElementSibling;
-                }
-                return null;
+                    if (!dateStr) {
+                        let prev = curr.previousElementSibling;
+                        while (prev) {
+                            if (prev.innerText && prev.innerText.length < 20) {
+                                let text = prev.innerText.trim();
+                                if (text === 'TODAY' || text === 'YESTERDAY' || text.match(/^\\d{2}\\/\\d{2}\\/\\d{4}$/) || text.match(/^[A-Za-z]+day$/)) {
+                                    dateStr = text;
+                                    break;
+                                }
+                            }
+                            prev = prev.previousElementSibling;
+                        }
+                    }
+                    
+                    let item = { id: item_id, date_str: dateStr };
+                    let rowText = row.innerText || "";
+                    
+                    let pdfBtn = row.querySelector("div[role='button']");
+                    let isPdf = pdfBtn && rowText.toLowerCase().includes('.pdf');
+                    let img = row.querySelector("img[src^='blob:']");
+                    
+                    if (isPdf) {
+                        item.type = 'PDF';
+                        item.is_pdf = true;
+                        item.is_file = true;
+                        item.name = rowText.split('\\n')[0];
+                        item.content = rowText;
+                        results.push(item);
+                    } else if (img) {
+                        item.type = 'IMAGE';
+                        item.is_pdf = false;
+                        item.is_file = true;
+                        item.name = 'Image';
+                        item.content = rowText;
+                        results.push(item);
+                    } else {
+                        let textSpan = row.querySelector("span.selectable-text");
+                        if (textSpan) {
+                            item.type = 'TEXT';
+                            item.is_file = false;
+                            item.is_pdf = false;
+                            let text = textSpan.innerText;
+                            item.name = text.length > 60 ? text.substring(0, 57) + '...' : text;
+                            item.content = text;
+                            results.push(item);
+                        }
+                    }
+                });
+                return results;
             }"""
-
-            # 1. Index PDFs
-            self.status_update.emit("Scanning for PDF documents...")
-            pdf_locators = page.locator("div[role='button']").filter(has_text=re.compile(r"\.pdf", re.IGNORECASE))
-            for i in range(pdf_locators.count()):
-                try:
-                    bubble = pdf_locators.nth(i)
-                    item_id = f"printavvo_pdf_{i}"
-                    bubble.evaluate(f"el => el.setAttribute('data-printavvo-id', '{item_id}')")
-                    date_str = bubble.evaluate(JS_EXTRACT_DATE)
-                    
-                    # Extract filename (usually first line of text)
-                    text = bubble.evaluate("el => el.innerText")
-                    fname = text.split('\\n')[0] if text else "Unknown PDF"
-                    
-                    indexed_items.append({
-                        "id": item_id,
-                        "name": fname,
-                        "type": "PDF",
-                        "date_str": date_str,
-                        "is_pdf": True
-                    })
-                except Exception as e:
-                    print(f"Error indexing PDF {i}: {e}")
-
-            # 2. Index Images
-            self.status_update.emit("Scanning for images...")
-            img_locators = page.locator("img[src^='blob:']")
-            for i in range(img_locators.count()):
-                try:
-                    img_el = img_locators.nth(i)
-                    item_id = f"printavvo_img_{i}"
-                    img_el.evaluate(f"el => el.setAttribute('data-printavvo-id', '{item_id}')")
-                    date_str = img_el.evaluate(JS_EXTRACT_DATE)
-                    
-                    indexed_items.append({
-                        "id": item_id,
-                        "name": f"Image {i+1}",
-                        "type": "JPEG",
-                        "date_str": date_str,
-                        "is_pdf": False
-                    })
-                except Exception as e:
-                    print(f"Error indexing Image {i}: {e}")
-
+            
+            indexed_items = page.evaluate(JS_INDEX_CHAT)
         except Exception as e:
             self.error.emit(f"Failed to index chat: {str(e)}")
 
@@ -233,8 +235,24 @@ class WhatsAppScraper(QThread):
         total = len(items)
         
         for i, item in enumerate(items):
-            self.status_update.emit(f"Downloading {i+1}/{total}: {item['name']}...")
+            self.status_update.emit(f"Processing {i+1}/{total}: {item['name']}...")
             try:
+                if not item.get('is_file'):
+                    # TEXT MESSAGE: Generate PDF via Playwright
+                    fname = f"WhatsApp_Text_{int(time.time())}_{i}.pdf"
+                    dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
+                    content = item.get('content', '')
+                    date_str = item.get('date_str', 'Unknown Date')
+                    html = f"<html><body style='font-family: sans-serif; padding: 40px; font-size: 18px;'><h3>WhatsApp Message - {date_str}</h3><p style='white-space: pre-wrap;'>{content}</p></body></html>"
+                    
+                    new_page = page.context.new_page()
+                    new_page.set_content(html)
+                    new_page.pdf(path=dest)
+                    new_page.close()
+                    
+                    saved_paths.append(dest)
+                    continue
+
                 el = page.locator(f"[data-printavvo-id='{item['id']}']")
                 
                 if item['is_pdf']:
