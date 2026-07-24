@@ -49,7 +49,11 @@ class WhatsAppScraper(QThread):
                     WHATSAPP_PROFILE_DIR,
                     headless=False,
                     accept_downloads=True,
-                    args=["--no-sandbox"],
+                    args=[
+                        "--no-sandbox",
+                        "--start-minimized",       # Run in background (minimized)
+                        "--window-size=1100,780",
+                    ],
                     viewport={"width": 1100, "height": 780},
                 )
                 page = context.pages[0] if context.pages else context.new_page()

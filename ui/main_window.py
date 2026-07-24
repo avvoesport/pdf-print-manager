@@ -21,6 +21,7 @@ from core.watcher import DownloadsWatcher
 from utils.settings import AppSettings
 from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
 from ui.whatsapp_dialog import WhatsAppDialog
+from core.image_converter import is_image, convert_image_to_pdf, SUPPORTED_IMAGES
 
 VERSION = "v1.1.0"
 
@@ -88,6 +89,13 @@ class AddFilesWorker(QThread):
                 self.pdf_manager.add_folder(path)
             elif path.lower().endswith('.pdf'):
                 self.pdf_manager.add_file(path)
+            elif is_image(path):
+                # Convert image to PDF then add
+                try:
+                    pdf_path = convert_image_to_pdf(path, os.path.dirname(path))
+                    self.pdf_manager.add_file(pdf_path)
+                except Exception:
+                    pass
         self.done.emit()
 
 
