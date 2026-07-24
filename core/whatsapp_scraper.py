@@ -156,7 +156,7 @@ class WhatsAppScraper(QThread):
             time            # --- Extract DOM sequentially ---
             self.status_update.emit("Indexing chat messages (Texts, PDFs, Images)...")
             
-            JS_INDEX_CHAT = """() => {
+            JS_INDEX_CHAT = r"""() => {
                 let results = [];
                 let rows = document.querySelectorAll('div[role="row"]');
                 rows.forEach((row, index) => {
@@ -183,10 +183,9 @@ class WhatsAppScraper(QThread):
                             prev = prev.previousElementSibling;
                         }
                     }
-                    
-                    let rowText = row.innerText || "";
+                              let rowText = row.innerText || "";
                     let timeStr = "";
-                    let timeMatch = rowText.match(/\\d{1,2}:\\d{2}\\s?(?:am|pm|AM|PM)?/g);
+                    let timeMatch = rowText.match(/\d{1,2}:\d{2}\s?(?:am|pm|AM|PM)?/g);
                     if (timeMatch && timeMatch.length > 0) {
                         timeStr = timeMatch[timeMatch.length - 1];
                     }
@@ -201,17 +200,21 @@ class WhatsAppScraper(QThread):
                         item.type = 'PDF';
                         item.is_pdf = true;
                         item.is_file = true;
-                        item.name = rowText.split('\\n')[0];
+                        let lines = rowText.split('\n');
+                        item.name = lines.find(l => l.toLowerCase().includes('.pdf')) || 'PDF Document';
                         item.content = rowText;
                         results.push(item);
                     } else if (img) {
                         item.type = 'IMAGE';
                         item.is_pdf = false;
                         item.is_file = true;
-                        item.name = 'Image';
+                        let lines = rowText.split('\n');
+                        // Caption is usually the first line if not an image size
+                        item.name = lines.length > 1 && !lines[0].includes(':') ? lines[0].substring(0, 40) : 'Image';
+                        if (item.name.toLowerCase() === 'forwarded') item.name = 'Image (Forwarded)';
                         item.content = rowText;
                         results.push(item);
-                    } else {
+                    } else {   } else {
                         let textSpan = row.querySelector("span.selectable-text");
                         if (textSpan) {
                             item.type = 'TEXT';

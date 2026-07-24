@@ -466,6 +466,10 @@ class WhatsAppDialog(QDialog):
             return
 
         self._populate_indexed_tree(items)
+        
+        # Scroll to bottom to show newest messages
+        self.tree_scraped.scrollToBottom()
+        
         self.btn_print_scraped.setEnabled(True)
         self.lbl_status.setText(f"✅ Found {len(items)} file(s). Please select what to download.")
         self.tabs.setCurrentIndex(1)
