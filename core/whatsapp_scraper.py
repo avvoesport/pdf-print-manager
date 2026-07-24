@@ -214,7 +214,7 @@ class WhatsAppScraper(QThread):
                         if (item.name.toLowerCase() === 'forwarded') item.name = 'Image (Forwarded)';
                         item.content = rowText;
                         results.push(item);
-                    } else {   } else {
+                    } else {
                         let textSpan = row.querySelector("span.selectable-text");
                         if (textSpan) {
                             item.type = 'TEXT';
