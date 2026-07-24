@@ -404,7 +404,6 @@ class WhatsAppDialog(QDialog):
         selected = self.list_contacts.currentItem()
         if not selected:
             return
-        idx = selected.data(Qt.UserRole)
         if self._scraper and self._scraper.isRunning():
             self.btn_scan.setEnabled(False)
             self.btn_scan.setText("Scanning…")
@@ -414,7 +413,7 @@ class WhatsAppDialog(QDialog):
             self.lbl_status.setText(f"Scanning chat: {chat_name}…")
             self.lbl_scraped.setText(f"2. Files found in '{chat_name}':")
             
-            self._scraper.request_scrape(idx)
+            self._scraper.request_scrape(chat_name)
         else:
             self.lbl_status.setText("Not connected — click 'Connect WhatsApp' first.")
 

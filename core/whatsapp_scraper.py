@@ -35,8 +35,8 @@ class WhatsAppScraper(QThread):
     def request_contacts(self):
         self._action = "list_contacts"
 
-    def request_scrape(self, chat_index: int):
-        self._target_chat_index = chat_index
+    def request_scrape(self, chat_name: str):
+        self._target_chat_name = chat_name
         self._action = "index_chat"
 
     def request_download(self, items: list):
@@ -84,7 +84,7 @@ class WhatsAppScraper(QThread):
                         self._action = "idle"
                         
                     elif self._action == "index_chat":
-                        items = self._index_chat(page, self._target_chat_index, PWTimeout)
+                        items = self._index_chat(page, self._target_chat_name)
                         self.files_indexed.emit(items)
                         self._action = "idle"
                         
@@ -130,17 +130,18 @@ class WhatsAppScraper(QThread):
     # ------------------------------------------------------------------ #
     # STEP 1: Indexing
     # ------------------------------------------------------------------ #
-    def _index_chat(self, page, chat_index: int, PWTimeout):
-        self.status_update.emit("Opening chat...")
+    def _index_chat(self, page, chat_name: str):
+        self.status_update.emit(f"Opening chat: {chat_name}...")
         indexed_items = []
         
         try:
-            items = page.query_selector_all("div[aria-label='Chat list'] > div")
-            if chat_index >= len(items):
-                self.error.emit("Chat not found.")
+            # Click the chat by exact title
+            chat_locator = page.locator(f"span[title='{chat_name}']").first
+            if chat_locator.count() == 0:
+                self.error.emit(f"Chat '{chat_name}' not found on screen.")
                 return []
 
-            items[chat_index].click()
+            chat_locator.click()
             time.sleep(2.5)
 
             self.status_update.emit("Scrolling to load recent messages...")
