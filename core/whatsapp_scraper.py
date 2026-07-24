@@ -137,15 +137,26 @@ class WhatsAppScraper(QThread):
         return contacts
 
     def _scrape_chat(self, page, chat_index: int, PWTimeout):
-        """
-        Open the chat and download all PDFs / images.
-        Uses page.on('download') to capture every browser download event.
-        Directly clicks document bubbles and image thumbnails to trigger downloads.
-        """
         import re
+        import hashlib
+        from datetime import datetime
+
+        log_path = os.path.join(DOWNLOAD_TEMP_DIR, "scraper_log.txt")
+        def _log(msg):
+            t = datetime.now().strftime("%H:%M:%S")
+            line = f"[{t}] {msg}"
+            print(line)
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except: pass
+            self.status_update.emit(msg)
+
+        _log(f"--- Starting scrape for chat index {chat_index} ---")
         collected = []
 
         def _on_download(dl):
+            _log(f"Download triggered: {dl.suggested_filename}")
             collected.append(dl)
 
         page.on("download", _on_download)
@@ -154,77 +165,91 @@ class WhatsAppScraper(QThread):
             # 1. Click the chat
             items = page.query_selector_all("div[aria-label='Chat list'] > div")
             if chat_index >= len(items):
+                _log("Error: Chat not found.")
                 self.error.emit("Chat not found. Please refresh the contact list.")
                 return []
 
+            _log("Opening chat...")
             items[chat_index].click()
             time.sleep(2.5)
 
             # 2. Focus message panel and scroll up to load history
-            self.status_update.emit("Scrolling to load messages…")
+            _log("Scrolling to load recent messages...")
             try:
                 panel = page.query_selector(
-                    "div[data-testid='conversation-panel-messages'], "
-                    "div[role='application']"
+                    "div[data-testid='conversation-panel-messages'], div[role='application']"
                 )
-                if panel:
-                    panel.click()
+                if panel: panel.click(timeout=2000)
             except Exception:
                 pass
 
-            for _ in range(12):
+            for _ in range(8):
                 page.keyboard.press("PageUp")
                 time.sleep(0.5)
-            time.sleep(1.5)
+            time.sleep(1)
 
-            # 3. Download PDFs (Documents)
-            # Find document bubbles (they usually have role="button" and contain ".pdf")
-            self.status_update.emit("Downloading PDFs...")
-            pdf_locators = page.locator("div[role='button']").filter(has_text=re.compile(r"\.pdf", re.IGNORECASE))
-            count = pdf_locators.count()
-            for i in range(count):
-                try:
-                    pdf_locators.nth(i).click()
-                    time.sleep(1)
-                except Exception:
-                    pass
+            # 3. Download PDFs via fast Javascript
+            _log("Scanning for PDF documents...")
+            pdf_clicks = page.evaluate("""
+                () => {
+                    let clicked = 0;
+                    document.querySelectorAll('div[role="button"]').forEach(el => {
+                        if (el.textContent && el.textContent.toLowerCase().includes('.pdf')) {
+                            try { el.click(); clicked++; } catch(e) {}
+                        }
+                    });
+                    return clicked;
+                }
+            """)
+            _log(f"Clicked {pdf_clicks} PDF document bubble(s).")
+            time.sleep(2)
 
             # 4. Download images by opening image viewer
-            # Chat images have a 'blob:' src. Profile pics don't.
-            self.status_update.emit("Downloading images...")
+            _log("Scanning for images...")
             images = page.locator("img[src^='blob:']")
             img_count = images.count()
+            _log(f"Found {img_count} image(s) in chat.")
+            
             for i in range(img_count):
+                _log(f"Processing image {i+1} of {img_count}...")
                 try:
-                    images.nth(i).click() # Open image viewer
-                    time.sleep(1.5)
+                    images.nth(i).click(timeout=2000) # Open image viewer
+                    time.sleep(1.2)
                     
                     # Click the download button in the viewer
                     dl_btns = page.locator("[data-icon*='download'], [aria-label*='Download'], [aria-label*='unduh']")
                     if dl_btns.count() > 0:
-                        dl_btns.first.click()
+                        dl_btns.first.click(timeout=2000)
+                        _log("Clicked image download button.")
                         time.sleep(1)
+                    else:
+                        _log("No download button found for this image.")
                     
                     page.keyboard.press("Escape") # Close viewer
                     time.sleep(0.8)
-                except Exception:
-                    try: 
-                        page.keyboard.press("Escape")
-                    except: 
-                        pass
+                except Exception as e:
+                    _log(f"Error on image {i+1}: {str(e)}")
+                    try: page.keyboard.press("Escape") 
+                    except: pass
 
-            # 5. Fallback: click any explicit download arrows not caught above
-            self.status_update.emit("Checking for missed files...")
-            page.evaluate("""
+            # 5. Fallback: click explicit download arrows
+            _log("Checking for any missed explicit download buttons...")
+            fallback_clicks = page.evaluate("""
                 () => {
+                    let clicked = 0;
                     document.querySelectorAll('[data-icon*="download"], [aria-label*="Download"]').forEach(el => {
-                        try { el.click(); } catch(e) {}
+                        try { el.click(); clicked++; } catch(e) {}
                     });
+                    return clicked;
                 }
             """)
+            _log(f"Triggered {fallback_clicks} fallback download(s).")
+            
+            _log("Waiting 4 seconds for downloads to complete...")
             time.sleep(4)
 
         except Exception as e:
+            _log(f"Fatal scrape error: {str(e)}")
             self.error.emit(f"Error while scraping:\n{str(e)}")
         finally:
             page.remove_listener("download", _on_download)
