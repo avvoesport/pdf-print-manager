@@ -184,8 +184,14 @@ class WhatsAppScraper(QThread):
                         }
                     }
                     
-                    let item = { id: item_id, date_str: dateStr };
                     let rowText = row.innerText || "";
+                    let timeStr = "";
+                    let timeMatch = rowText.match(/\\d{1,2}:\\d{2}\\s?(?:am|pm|AM|PM)?/g);
+                    if (timeMatch && timeMatch.length > 0) {
+                        timeStr = timeMatch[timeMatch.length - 1];
+                    }
+                    
+                    let item = { id: item_id, date_str: dateStr, time_str: timeStr };
                     
                     let pdfBtn = row.querySelector("div[role='button']");
                     let isPdf = pdfBtn && rowText.toLowerCase().includes('.pdf');

@@ -124,9 +124,9 @@ class WhatsAppDialog(QDialog):
         l2.addWidget(self.lbl_scraped)
 
         self.tree_scraped = QTreeWidget()
-        self.tree_scraped.setHeaderLabels(["File", "Size", "Type"])
-        self.tree_scraped.setColumnWidth(0, 320)
-        self.tree_scraped.setColumnWidth(1, 80)
+        self.tree_scraped.setHeaderLabels(["Time", "Message", "Type"])
+        self.tree_scraped.setColumnWidth(0, 70)
+        self.tree_scraped.setColumnWidth(1, 330)
         self.tree_scraped.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree_scraped.setAlternatingRowColors(True)
         l2.addWidget(self.tree_scraped)
@@ -312,7 +312,8 @@ class WhatsAppDialog(QDialog):
             font = parent.font(0); font.setBold(True); parent.setFont(0, font)
             
             for item, _ in group_items:
-                child = QTreeWidgetItem(parent, [item["name"], "", item["type"]])
+                time_val = item.get("time_str", "")
+                child = QTreeWidgetItem(parent, [time_val, item["name"], item["type"]])
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
                 child.setCheckState(0, Qt.Checked)
                 child.setData(0, Qt.UserRole, item)
