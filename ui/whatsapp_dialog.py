@@ -132,7 +132,7 @@ class WhatsAppDialog(QDialog):
         l2.addWidget(self.tree_scraped)
 
         b2_layout = QHBoxLayout()
-        self.btn_print_scraped = QPushButton("🖨  Send Selected to Printavvo")
+        self.btn_print_scraped = QPushButton("🖨  Download & Print Selected")
         self.btn_print_scraped.setMinimumHeight(38)
         self.btn_print_scraped.setStyleSheet("font-weight:bold; background:#25D366; color:white; border:none; padding:5px 12px;")
         self.btn_print_scraped.clicked.connect(self._on_print_scraped)
@@ -140,7 +140,7 @@ class WhatsAppDialog(QDialog):
         b2_layout.addStretch()
         b2_layout.addWidget(self.btn_print_scraped)
         l2.addLayout(b2_layout)
-        self.tabs.addTab(t2, "📄 2. Scraped Files")
+        self.tabs.addTab(t2, "📄 2. Select Files")
 
         # ==================================================================
         # TAB 3: Global History (Step 3)
@@ -264,6 +264,64 @@ class WhatsAppDialog(QDialog):
                 else:
                     child.setForeground(2, QColor("#2980b9"))
 
+    def _populate_indexed_tree(self, items: list):
+        """Populate Tab 2 with indexed items and checkboxes."""
+        import re
+        self.tree_scraped.clear()
+        if not items:
+            return
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        groups = {}
+
+        for item in items:
+            mdate = today
+            ds = item.get("date_str")
+            if ds:
+                ds = ds.upper().strip()
+                if ds == "TODAY":
+                    mdate = today
+                elif ds == "YESTERDAY":
+                    mdate = yesterday
+                elif re.match(r"^\d{2}/\d{2}/\d{4}$", ds):
+                    parts = ds.split('/')
+                    mdate = date(int(parts[2]), int(parts[1]), int(parts[0]))
+            
+            if mdate == today:
+                label = "📅  Today"
+            elif mdate == yesterday:
+                label = "📅  Yesterday"
+            else:
+                label = f"📅  {mdate.strftime('%d %b %Y')}"
+                
+            groups.setdefault(label, []).append((item, mdate))
+
+        group_dates = {}
+        for label, group_items in groups.items():
+            if label == "📅  Today": group_dates[label] = today
+            elif label == "📅  Yesterday": group_dates[label] = yesterday
+            else: group_dates[label] = group_items[0][1]
+
+        sorted_labels = sorted(groups.keys(), key=lambda l: group_dates[l], reverse=True)
+
+        for label in sorted_labels:
+            group_items = groups[label]
+            parent = QTreeWidgetItem(self.tree_scraped, [label, "", ""])
+            parent.setExpanded(True)
+            font = parent.font(0); font.setBold(True); parent.setFont(0, font)
+            
+            for item, _ in group_items:
+                child = QTreeWidgetItem(parent, [item["name"], "", item["type"]])
+                child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
+                child.setCheckState(0, Qt.Checked)
+                child.setData(0, Qt.UserRole, item)
+                
+                if item.get("is_pdf"):
+                    child.setForeground(2, QColor("#e74c3c"))
+                else:
+                    child.setForeground(2, QColor("#2980b9"))
+
     def _load_file_history(self):
         """Populate the global history tree."""
         if not os.path.isdir(DOWNLOAD_TEMP_DIR):
@@ -288,12 +346,24 @@ class WhatsAppDialog(QDialog):
         return paths
 
     def _on_print_scraped(self):
-        paths = self._get_selected_paths(self.tree_scraped)
-        if paths:
-            self.files_imported.emit(paths)
-            self.lbl_status.setText(f"✅ {len(paths)} file(s) sent to Printavvo!")
-            # Optional: jump back to main UI
-            self.accept()
+        items_to_dl = []
+        root = self.tree_scraped.invisibleRootItem()
+        for i in range(root.childCount()):
+            group = root.child(i)
+            for j in range(group.childCount()):
+                child = group.child(j)
+                if child.checkState(0) == Qt.Checked:
+                    item_data = child.data(0, Qt.UserRole)
+                    if item_data:
+                        items_to_dl.append(item_data)
+        
+        if items_to_dl:
+            self.btn_print_scraped.setEnabled(False)
+            self.btn_print_scraped.setText("Downloading...")
+            self.progress.setVisible(True)
+            self._scraper.request_download(items_to_dl)
+        else:
+            self.lbl_status.setText("No files selected!")
 
     def _on_print_hist(self):
         paths = self._get_selected_paths(self.tree_hist)
@@ -317,7 +387,8 @@ class WhatsAppDialog(QDialog):
         self._scraper.login_required.connect(self._on_login_required)
         self._scraper.logged_in.connect(self._on_logged_in)
         self._scraper.contacts_ready.connect(self._on_contacts_ready)
-        self._scraper.files_scraped.connect(self._on_files_scraped)
+        self._scraper.files_indexed.connect(self._on_files_indexed)
+        self._scraper.files_downloaded.connect(self._on_files_downloaded)
         self._scraper.error.connect(self._on_error)
         self._scraper.start()
 
@@ -383,32 +454,35 @@ class WhatsAppDialog(QDialog):
         self.btn_connect.setEnabled(True)
         self.btn_refresh.setEnabled(True)
 
-    def _on_files_scraped(self, paths: list):
+    def _on_files_indexed(self, items: list):
         self.progress.setVisible(False)
         self.btn_scan.setText("🔍  Scan Chat for Files")
         self.btn_scan.setEnabled(True)
 
-        if not paths:
-            self.lbl_status.setText("No new printable files found in this chat.")
+        if not items:
+            self.lbl_status.setText("No printable files found in this chat.")
             self.tree_scraped.clear()
             self.btn_print_scraped.setEnabled(False)
             return
 
-        # Show the newly scraped files in Tab 2, grouped by date
-        self._latest_scraped_files = paths
-        self._populate_tree(self.tree_scraped, paths)
-        
-        # Select all newly scraped files by default so user can just click print
-        self.tree_scraped.selectAll()
-        
+        self._populate_indexed_tree(items)
         self.btn_print_scraped.setEnabled(True)
-        self.lbl_status.setText(f"✅ Found {len(paths)} file(s). Switching to 'Scraped Files' tab...")
-        
-        # Switch to Tab 2
+        self.lbl_status.setText(f"✅ Found {len(items)} file(s). Please select what to download.")
         self.tabs.setCurrentIndex(1)
-        
-        # Also refresh global history in background
         self._load_file_history()
+
+    def _on_files_downloaded(self, paths: list):
+        self.progress.setVisible(False)
+        self.btn_print_scraped.setText("🖨  Download & Print Selected")
+        self.btn_print_scraped.setEnabled(True)
+        
+        if paths:
+            self.files_imported.emit(paths)
+            self.lbl_status.setText(f"✅ {len(paths)} file(s) downloaded and sent to Printavvo!")
+            self._load_file_history()
+            self.accept()
+        else:
+            self.lbl_status.setText("Failed to download any files.")
 
     def _on_error(self, msg: str):
         self.progress.setVisible(False)
