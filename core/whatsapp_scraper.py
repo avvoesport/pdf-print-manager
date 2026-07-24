@@ -1,7 +1,5 @@
 import os
 import time
-import shutil
-import tempfile
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
@@ -15,26 +13,20 @@ class WhatsAppScraper(QThread):
     Playwright-based WhatsApp Web scraper.
     Runs entirely in a background thread so the UI stays responsive.
     """
-    status_update  = Signal(str)            # human-readable status text
-    login_required = Signal()               # QR code is on screen
-    logged_in      = Signal()               # successfully logged in
-    contacts_ready = Signal(list)           # list of {"name": str, "element_index": int}
-    files_scraped  = Signal(list)           # list of local file paths (str)
-    error          = Signal(str)            # error message
+    status_update  = Signal(str)
+    login_required = Signal()
+    logged_in      = Signal()
+    contacts_ready = Signal(list)
+    files_scraped  = Signal(list)
+    error          = Signal(str)
 
     def __init__(self):
         super().__init__()
-        self._browser  = None
-        self._page     = None
-        self._pw       = None
-        self._action   = "login"            # "login" | "list_contacts" | "scrape"
+        self._action = "login"
         self._target_chat_index = None
         os.makedirs(WHATSAPP_PROFILE_DIR, exist_ok=True)
         os.makedirs(DOWNLOAD_TEMP_DIR, exist_ok=True)
 
-    # ------------------------------------------------------------------ #
-    # Public control methods (called from UI thread)                       #
-    # ------------------------------------------------------------------ #
     def request_contacts(self):
         self._action = "list_contacts"
 
@@ -42,8 +34,6 @@ class WhatsAppScraper(QThread):
         self._target_chat_index = chat_index
         self._action = "scrape"
 
-    # ------------------------------------------------------------------ #
-    # Thread entry point                                                   #
     # ------------------------------------------------------------------ #
     def run(self):
         try:
@@ -54,9 +44,7 @@ class WhatsAppScraper(QThread):
 
         try:
             with sync_playwright() as pw:
-                self._pw = pw
                 self.status_update.emit("Launching browser…")
-
                 context = pw.chromium.launch_persistent_context(
                     WHATSAPP_PROFILE_DIR,
                     headless=False,
@@ -65,21 +53,17 @@ class WhatsAppScraper(QThread):
                     viewport={"width": 1100, "height": 780},
                 )
                 page = context.pages[0] if context.pages else context.new_page()
-                self._page = page
 
                 page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
                 self.status_update.emit("Waiting for WhatsApp Web to load…")
 
-                # ---------- Wait for login ----------
-                logged = self._wait_for_login(page, PWTimeout)
-                if not logged:
+                if not self._wait_for_login(page, PWTimeout):
                     context.close()
                     return
 
                 self.logged_in.emit()
                 self.status_update.emit("Logged in! Loading chats…")
 
-                # ---------- Wait for chat list ----------
                 try:
                     page.wait_for_selector("div[aria-label='Chat list']", timeout=20000)
                 except PWTimeout:
@@ -87,13 +71,10 @@ class WhatsAppScraper(QThread):
                     context.close()
                     return
 
-                # ---------- Initial contact load ----------
                 contacts = self._get_contacts(page)
                 self.contacts_ready.emit(contacts)
                 self.status_update.emit(f"Found {len(contacts)} chats. Select one to import.")
 
-                # ---------- Persistent event loop ----------
-                # Browser stays open until the dialog is closed (interruption requested)
                 self._action = "idle"
                 while not self.isInterruptionRequested():
                     time.sleep(0.3)
@@ -114,27 +95,21 @@ class WhatsAppScraper(QThread):
                         if files:
                             self.status_update.emit(f"Done! {len(files)} file(s) imported.")
                         else:
-                            self.status_update.emit("No files found in this chat. Try another chat.")
+                            self.status_update.emit("No files found. Try another chat.")
 
                 context.close()
 
         except Exception as e:
             self.error.emit(f"WhatsApp scraper error:\n{str(e)}")
 
-
-    # ------------------------------------------------------------------ #
-    # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
     def _wait_for_login(self, page, PWTimeout):
-        """Wait up to 120 seconds for the user to scan QR or auto-login."""
         qr_emitted = False
-        for _ in range(240):               # 240 × 0.5 s = 120 s
+        for _ in range(240):
             if self.isInterruptionRequested():
                 return False
-            # Check if already logged in (chat list visible)
             if page.query_selector("div[aria-label='Chat list']"):
                 return True
-            # Check if QR code is visible
             if not qr_emitted and page.query_selector("canvas[aria-label='Scan this QR code to link a device']"):
                 self.login_required.emit()
                 self.status_update.emit("📱 Please scan the QR code with your phone.")
@@ -144,7 +119,6 @@ class WhatsAppScraper(QThread):
         return False
 
     def _get_contacts(self, page):
-        """Return list of chat names visible in the sidebar."""
         contacts = []
         try:
             items = page.query_selector_all("div[aria-label='Chat list'] > div")
@@ -159,131 +133,160 @@ class WhatsAppScraper(QThread):
         return contacts
 
     def _scrape_chat(self, page, chat_index: int, PWTimeout):
-        """Click the selected chat and download all PDFs and images."""
-        downloaded = []
+        """
+        Open the chat and download all PDFs / images.
+        Uses page.on('download') to capture every browser download event,
+        then triggers downloads via JavaScript (no brittle CSS selectors needed).
+        """
+        collected = []
+
+        def _on_download(dl):
+            collected.append(dl)
+
+        page.on("download", _on_download)
+
         try:
+            # 1. Click the chat
             items = page.query_selector_all("div[aria-label='Chat list'] > div")
             if chat_index >= len(items):
                 self.error.emit("Chat not found. Please refresh the contact list.")
                 return []
 
             items[chat_index].click()
-            time.sleep(2.5)   # let chat load
+            time.sleep(2.5)
 
+            # 2. Focus message panel and scroll up to load history
             self.status_update.emit("Scrolling to load messages…")
-            # Scroll the main chat pane up to load more history
-            for _ in range(8):
-                page.keyboard.press("PageUp")
-                time.sleep(0.6)
-
-            time.sleep(1)
-            self.status_update.emit("Looking for files…")
-
-            # -------- Strategy 1: Document/PDF attachments --------
-            # WhatsApp renders PDF docs with a clickable download button inside the message bubble.
-            # The download span has data-icon="download" or data-testid contains "download"
-            doc_selectors = [
-                "span[data-testid='document-download-icon']",
-                "div[data-testid='document-thumb'] span[data-icon='download']",
-                "span[data-icon='download-audio']",
-                # Broad fallback — any download icon inside a message
-                "div[data-testid='msg-container'] span[data-icon='download']",
-            ]
-            for sel in doc_selectors:
-                btns = page.query_selector_all(sel)
-                for btn in btns:
-                    try:
-                        with page.expect_download(timeout=12000) as dl_info:
-                            btn.click()
-                        dl = dl_info.value
-                        fname = dl.suggested_filename or f"wa_doc_{int(time.time())}"
-                        dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
-                        dl.save_as(dest)
-                        downloaded.append(dest)
-                        self.status_update.emit(f"Downloaded: {fname}")
-                        time.sleep(0.5)
-                    except Exception:
-                        pass
-
-            # -------- Strategy 2: JavaScript — find ALL download buttons --------
-            # Use JS to grab every button/span that has a download icon data attribute
             try:
-                download_btns = page.evaluate("""
-                    () => {
-                        const results = [];
-                        // Find all elements with data-icon containing 'download'
-                        const els = document.querySelectorAll('[data-icon]');
-                        els.forEach((el, i) => {
-                            const icon = el.getAttribute('data-icon') || '';
-                            if (icon.includes('download')) {
-                                results.push(i);
-                            }
-                        });
-                        return results;
-                    }
-                """)
-                all_icon_els = page.query_selector_all("[data-icon]")
-                for idx in (download_btns or []):
-                    if idx < len(all_icon_els):
-                        el = all_icon_els[idx]
+                panel = page.query_selector(
+                    "div[data-testid='conversation-panel-messages'], "
+                    "div[role='application']"
+                )
+                if panel:
+                    panel.click()
+            except Exception:
+                pass
+
+            for _ in range(10):
+                page.keyboard.press("PageUp")
+                time.sleep(0.5)
+            time.sleep(1.5)
+
+            # 3. Try opening the WhatsApp media/docs panel via chat header
+            self.status_update.emit("Checking media gallery…")
+            try:
+                header = page.query_selector(
+                    "header[data-testid='conversation-header'] span[dir='auto'], "
+                    "header[data-testid='conversation-header']"
+                )
+                if header:
+                    header.click()
+                    time.sleep(1.5)
+
+                    # Click "Media, links and docs" link if visible
+                    for sel in [
+                        "div[data-testid='all-media-link']",
+                        "[data-testid='media-bar'] div",
+                        "span[data-testid='media-section-header']",
+                    ]:
+                        el = page.query_selector(sel)
+                        if el:
+                            el.click()
+                            time.sleep(1.5)
+                            break
+
+                    # Switch to Docs tab if present
+                    for label in ["Docs", "Documents", "Files"]:
                         try:
-                            with page.expect_download(timeout=12000) as dl_info:
-                                el.click()
-                            dl = dl_info.value
-                            fname = dl.suggested_filename or f"wa_file_{int(time.time())}"
-                            dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
-                            dl.save_as(dest)
-                            if dest not in downloaded:
-                                downloaded.append(dest)
-                                self.status_update.emit(f"Downloaded: {fname}")
-                            time.sleep(0.5)
+                            tab = page.get_by_role("tab", name=label, exact=False)
+                            if tab.count() > 0:
+                                tab.first.click()
+                                time.sleep(1)
+                                break
                         except Exception:
                             pass
             except Exception:
                 pass
 
-            # -------- Strategy 3: Image thumbnails — hover then download --------
-            # Images in WhatsApp show a download button on hover
+            # 4. JavaScript: click every possible download trigger
+            self.status_update.emit("Clicking download buttons…")
+            _JS_CLICK_DOWNLOADS = """
+                () => {
+                    let clicked = 0;
+
+                    // A: data-icon containing 'download'
+                    document.querySelectorAll('[data-icon]').forEach(el => {
+                        const v = (el.getAttribute('data-icon') || '').toLowerCase();
+                        if (v.includes('download') || v === 'down' || v === 'arrow-down') {
+                            try { el.click(); clicked++; } catch(e) {}
+                        }
+                    });
+
+                    // B: aria-label containing 'download' or 'unduh' (Indonesian)
+                    document.querySelectorAll('[aria-label]').forEach(el => {
+                        const v = (el.getAttribute('aria-label') || '').toLowerCase();
+                        if (v.includes('download') || v.includes('unduh')) {
+                            try { el.click(); clicked++; } catch(e) {}
+                        }
+                    });
+
+                    // C: data-testid containing 'download'
+                    document.querySelectorAll('[data-testid]').forEach(el => {
+                        const v = (el.getAttribute('data-testid') || '').toLowerCase();
+                        if (v.includes('download')) {
+                            try { el.click(); clicked++; } catch(e) {}
+                        }
+                    });
+
+                    // D: <a> tags with blob or media hrefs
+                    document.querySelectorAll('a[href^="blob:"], a[href*="media"]').forEach(el => {
+                        try { el.click(); clicked++; } catch(e) {}
+                    });
+
+                    return clicked;
+                }
+            """
+            n = page.evaluate(_JS_CLICK_DOWNLOADS)
+            self.status_update.emit(f"Triggered {n} download element(s). Waiting…")
+            time.sleep(4)
+
+            # 5. Escape back to chat view and do a second pass
             try:
-                img_msgs = page.query_selector_all(
-                    "img[src*='blob:'], "
-                    "div[data-testid='media-url-provider'] img, "
-                    "div[class*='message-image'] img"
-                )
-                for img in img_msgs[:20]:  # limit to 20 images
-                    try:
-                        img.hover()
-                        time.sleep(0.4)
-                        # After hover, look for a download button that appeared
-                        dl_btn = page.query_selector(
-                            "button[aria-label*='Download'], "
-                            "div[role='button'][aria-label*='Download']"
-                        )
-                        if dl_btn:
-                            with page.expect_download(timeout=10000) as dl_info:
-                                dl_btn.click()
-                            dl = dl_info.value
-                            fname = dl.suggested_filename or f"wa_img_{int(time.time())}.jpg"
-                            dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
-                            dl.save_as(dest)
-                            if dest not in downloaded:
-                                downloaded.append(dest)
-                                self.status_update.emit(f"Downloaded: {fname}")
-                            time.sleep(0.3)
-                    except Exception:
-                        pass
+                page.keyboard.press("Escape")
+                time.sleep(0.8)
             except Exception:
                 pass
 
+            n2 = page.evaluate(_JS_CLICK_DOWNLOADS)
+            self.status_update.emit(f"Second pass: {n2} element(s). Waiting…")
+            time.sleep(3)
+
         except Exception as e:
-            self.error.emit(f"Error while scraping chat:\n{str(e)}")
+            self.error.emit(f"Error while scraping:\n{str(e)}")
+        finally:
+            page.remove_listener("download", _on_download)
 
-        # Deduplicate by path
-        seen = set()
-        unique = []
-        for p in downloaded:
-            if p not in seen:
-                seen.add(p)
-                unique.append(p)
-        return unique
+        # 6. Save all collected downloads
+        allowed = ('.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff')
+        saved = []
+        seen_names = set()
+        for dl in collected:
+            try:
+                fname = dl.suggested_filename or f"wa_file_{int(time.time())}"
+                if not any(fname.lower().endswith(ext) for ext in allowed):
+                    continue
+                base = fname
+                counter = 1
+                while fname in seen_names:
+                    stem, ext = os.path.splitext(base)
+                    fname = f"{stem}_{counter}{ext}"
+                    counter += 1
+                seen_names.add(fname)
+                dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
+                dl.save_as(dest)
+                saved.append(dest)
+                self.status_update.emit(f"Saved: {fname}")
+            except Exception:
+                pass
 
+        return saved
