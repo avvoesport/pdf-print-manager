@@ -139,9 +139,10 @@ class WhatsAppScraper(QThread):
     def _scrape_chat(self, page, chat_index: int, PWTimeout):
         """
         Open the chat and download all PDFs / images.
-        Uses page.on('download') to capture every browser download event,
-        then triggers downloads via JavaScript (no brittle CSS selectors needed).
+        Uses page.on('download') to capture every browser download event.
+        Directly clicks document bubbles and image thumbnails to trigger downloads.
         """
+        import re
         collected = []
 
         def _on_download(dl):
@@ -171,114 +172,77 @@ class WhatsAppScraper(QThread):
             except Exception:
                 pass
 
-            for _ in range(10):
+            for _ in range(12):
                 page.keyboard.press("PageUp")
                 time.sleep(0.5)
             time.sleep(1.5)
 
-            # 3. Try opening the WhatsApp media/docs panel via chat header
-            self.status_update.emit("Checking media gallery…")
-            try:
-                header = page.query_selector(
-                    "header[data-testid='conversation-header'] span[dir='auto'], "
-                    "header[data-testid='conversation-header']"
-                )
-                if header:
-                    header.click()
+            # 3. Download PDFs (Documents)
+            # Find document bubbles (they usually have role="button" and contain ".pdf")
+            self.status_update.emit("Downloading PDFs...")
+            pdf_locators = page.locator("div[role='button']").filter(has_text=re.compile(r"\.pdf", re.IGNORECASE))
+            count = pdf_locators.count()
+            for i in range(count):
+                try:
+                    pdf_locators.nth(i).click()
+                    time.sleep(1)
+                except Exception:
+                    pass
+
+            # 4. Download images by opening image viewer
+            # Chat images have a 'blob:' src. Profile pics don't.
+            self.status_update.emit("Downloading images...")
+            images = page.locator("img[src^='blob:']")
+            img_count = images.count()
+            for i in range(img_count):
+                try:
+                    images.nth(i).click() # Open image viewer
                     time.sleep(1.5)
+                    
+                    # Click the download button in the viewer
+                    dl_btns = page.locator("[data-icon*='download'], [aria-label*='Download'], [aria-label*='unduh']")
+                    if dl_btns.count() > 0:
+                        dl_btns.first.click()
+                        time.sleep(1)
+                    
+                    page.keyboard.press("Escape") # Close viewer
+                    time.sleep(0.8)
+                except Exception:
+                    try: 
+                        page.keyboard.press("Escape")
+                    except: 
+                        pass
 
-                    # Click "Media, links and docs" link if visible
-                    for sel in [
-                        "div[data-testid='all-media-link']",
-                        "[data-testid='media-bar'] div",
-                        "span[data-testid='media-section-header']",
-                    ]:
-                        el = page.query_selector(sel)
-                        if el:
-                            el.click()
-                            time.sleep(1.5)
-                            break
-
-                    # Switch to Docs tab if present
-                    for label in ["Docs", "Documents", "Files"]:
-                        try:
-                            tab = page.get_by_role("tab", name=label, exact=False)
-                            if tab.count() > 0:
-                                tab.first.click()
-                                time.sleep(1)
-                                break
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-            # 4. JavaScript: click every possible download trigger
-            self.status_update.emit("Clicking download buttons…")
-            _JS_CLICK_DOWNLOADS = """
+            # 5. Fallback: click any explicit download arrows not caught above
+            self.status_update.emit("Checking for missed files...")
+            page.evaluate("""
                 () => {
-                    let clicked = 0;
-
-                    // A: data-icon containing 'download'
-                    document.querySelectorAll('[data-icon]').forEach(el => {
-                        const v = (el.getAttribute('data-icon') || '').toLowerCase();
-                        if (v.includes('download') || v === 'down' || v === 'arrow-down') {
-                            try { el.click(); clicked++; } catch(e) {}
-                        }
+                    document.querySelectorAll('[data-icon*="download"], [aria-label*="Download"]').forEach(el => {
+                        try { el.click(); } catch(e) {}
                     });
-
-                    // B: aria-label containing 'download' or 'unduh' (Indonesian)
-                    document.querySelectorAll('[aria-label]').forEach(el => {
-                        const v = (el.getAttribute('aria-label') || '').toLowerCase();
-                        if (v.includes('download') || v.includes('unduh')) {
-                            try { el.click(); clicked++; } catch(e) {}
-                        }
-                    });
-
-                    // C: data-testid containing 'download'
-                    document.querySelectorAll('[data-testid]').forEach(el => {
-                        const v = (el.getAttribute('data-testid') || '').toLowerCase();
-                        if (v.includes('download')) {
-                            try { el.click(); clicked++; } catch(e) {}
-                        }
-                    });
-
-                    // D: <a> tags with blob or media hrefs
-                    document.querySelectorAll('a[href^="blob:"], a[href*="media"]').forEach(el => {
-                        try { el.click(); clicked++; } catch(e) {}
-                    });
-
-                    return clicked;
                 }
-            """
-            n = page.evaluate(_JS_CLICK_DOWNLOADS)
-            self.status_update.emit(f"Triggered {n} download element(s). Waiting…")
+            """)
             time.sleep(4)
-
-            # 5. Escape back to chat view and do a second pass
-            try:
-                page.keyboard.press("Escape")
-                time.sleep(0.8)
-            except Exception:
-                pass
-
-            n2 = page.evaluate(_JS_CLICK_DOWNLOADS)
-            self.status_update.emit(f"Second pass: {n2} element(s). Waiting…")
-            time.sleep(3)
 
         except Exception as e:
             self.error.emit(f"Error while scraping:\n{str(e)}")
         finally:
             page.remove_listener("download", _on_download)
 
-        # 6. Save all collected downloads
+        # 6. Save all collected downloads, deduplicate by MD5 hash
+        import hashlib
         allowed = ('.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff')
         saved = []
         seen_names = set()
+        seen_hashes = set()
+
         for dl in collected:
             try:
                 fname = dl.suggested_filename or f"wa_file_{int(time.time())}"
                 if not any(fname.lower().endswith(ext) for ext in allowed):
                     continue
+
+                # Give unique filename if collision
                 base = fname
                 counter = 1
                 while fname in seen_names:
@@ -286,11 +250,22 @@ class WhatsAppScraper(QThread):
                     fname = f"{stem}_{counter}{ext}"
                     counter += 1
                 seen_names.add(fname)
+
                 dest = os.path.join(DOWNLOAD_TEMP_DIR, fname)
                 dl.save_as(dest)
+
+                # Deduplicate by content hash — discard if we've seen this file before
+                file_hash = hashlib.md5(open(dest, 'rb').read()).hexdigest()
+                if file_hash in seen_hashes:
+                    os.remove(dest)   # remove the duplicate
+                    self.status_update.emit(f"Skipped duplicate: {fname}")
+                    continue
+
+                seen_hashes.add(file_hash)
                 saved.append(dest)
                 self.status_update.emit(f"Saved: {fname}")
             except Exception:
                 pass
 
         return saved
+
