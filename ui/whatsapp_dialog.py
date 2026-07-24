@@ -191,6 +191,7 @@ class WhatsAppDialog(QDialog):
     # ------------------------------------------------------------------ #
     def _populate_tree(self, tree: QTreeWidget, file_paths: list):
         """Helper to populate a tree grouped by date."""
+        import re
         tree.clear()
         if not file_paths:
             return
@@ -206,7 +207,18 @@ class WhatsAppDialog(QDialog):
             size_kb = os.path.getsize(fpath) // 1024
             ext = os.path.splitext(fname)[1].upper().lstrip('.')
             
+            # 1. Default to OS modification time (download time)
             mdate = date.fromtimestamp(os.path.getmtime(fpath))
+            
+            # 2. Try to parse the original WhatsApp conversation date from the filename
+            # e.g., "WhatsApp Image 2026-07-10 at 15.05.12.jpeg"
+            wa_match = re.search(r'(?:WhatsApp Image|WhatsApp Video|WhatsApp Document) (\d{4}-\d{2}-\d{2})', fname)
+            if wa_match:
+                try:
+                    mdate = datetime.strptime(wa_match.group(1), "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+            
             if mdate == today:
                 label = "📅  Today"
             elif mdate == yesterday:
@@ -214,24 +226,37 @@ class WhatsAppDialog(QDialog):
             else:
                 label = f"📅  {mdate.strftime('%d %b %Y')}"
                 
-            groups.setdefault(label, []).append((fpath, size_kb, ext, fname))
+            groups.setdefault(label, []).append((fpath, size_kb, ext, fname, mdate))
 
-        # Sort groups logically (Today first)
+        # Sort groups logically (Today first, then newest to oldest)
         def sort_key(label):
             if "Today" in label: return 0
             if "Yesterday" in label: return 1
+            # We want older dates to be sorted properly, but since the label is text "DD MMM YYYY", 
+            # we should parse it back or just rely on the fact that we can store the max date in the group.
             return 2
 
-        for label in sorted(groups.keys(), key=sort_key):
+        # A better approach to sort groups by date:
+        # Create a list of (label, max_date_in_group)
+        group_dates = {}
+        for label, items in groups.items():
+            if label == "📅  Today": group_dates[label] = today
+            elif label == "📅  Yesterday": group_dates[label] = yesterday
+            else: group_dates[label] = items[0][4] # mdate is at index 4
+
+        # Sort labels by date descending
+        sorted_labels = sorted(groups.keys(), key=lambda l: group_dates[l], reverse=True)
+
+        for label in sorted_labels:
             files = groups[label]
             parent = QTreeWidgetItem(tree, [label, "", ""])
             parent.setExpanded(True)
             font = parent.font(0); font.setBold(True); parent.setFont(0, font)
             
-            # Sort files inside group by modified time descending
+            # Sort files inside group by filename / modified time descending
             files.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
             
-            for fpath, size_kb, ext, fname in files:
+            for fpath, size_kb, ext, fname, _ in files:
                 child = QTreeWidgetItem(parent, [fname, f"{size_kb} KB", ext])
                 child.setData(0, Qt.UserRole, fpath)
                 if ext == 'PDF':
