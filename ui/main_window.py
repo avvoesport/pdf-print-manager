@@ -312,7 +312,7 @@ class MainWindow(QMainWindow):
         po_layout = QHBoxLayout()
         po_layout.addWidget(QLabel("Size:"))
         self.combo_paper = QComboBox()
-        self.combo_paper.addItems(["A4", "A3", "Letter", "Legal", "Custom"])
+        self.combo_paper.addItems(["A4", "A3", "B4", "Letter", "Legal", "Custom"])
         po_layout.addWidget(self.combo_paper)
         
         self.spin_custom_w = QDoubleSpinBox()

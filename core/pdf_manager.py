@@ -54,6 +54,8 @@ class PDFFile:
                     self.paper_size = "A3"
                 elif abs(w_mm - 216) < 5 and abs(h_mm - 279) < 5:
                     self.paper_size = "Letter"
+                elif abs(w_mm - 250) < 5 and abs(h_mm - 353) < 5:
+                    self.paper_size = "B4"
                 elif abs(w_mm - 216) < 5 and abs(h_mm - 356) < 5:
                     self.paper_size = "Legal"
                 elif abs(w_mm - 148) < 5 and abs(h_mm - 210) < 5:

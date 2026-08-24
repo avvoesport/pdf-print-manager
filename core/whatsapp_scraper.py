@@ -227,6 +227,20 @@ class WhatsAppScraper(QThread):
                         }
                     }
                 });
+                
+                if (results.length === 0) {
+                    results.push({
+                        id: "debug",
+                        name: "DEBUG: Found " + rows.length + " rows. URL: " + window.location.href.substring(0, 20),
+                        type: "TEXT",
+                        is_pdf: false,
+                        is_file: false,
+                        date_str: "Today",
+                        time_str: "00:00",
+                        content: "DEBUG INFO"
+                    });
+                }
+                
                 return results;
             }"""
             

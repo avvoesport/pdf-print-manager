@@ -72,6 +72,7 @@ class PrintWorker(QThread):
         sizes = {
             "A4": QPageSize.A4,
             "A3": QPageSize.A3,
+            "B4": QPageSize.B4,
             "Letter": QPageSize.Letter,
             "Legal": QPageSize.Legal
         }
