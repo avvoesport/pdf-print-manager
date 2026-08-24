@@ -20,7 +20,6 @@ from core.print_worker import PrintWorker
 from core.watcher import DownloadsWatcher
 from utils.settings import AppSettings
 from ui.components import FileTableView, FileTableModel, PreviewWidget, ComboBoxDelegate
-from ui.whatsapp_dialog import WhatsAppDialog
 from core.image_converter import is_image, convert_image_to_pdf, SUPPORTED_IMAGES
 
 VERSION = "v1.1.0"
@@ -232,11 +231,6 @@ class MainWindow(QMainWindow):
         
         toolbar_layout.addWidget(btn_add_files)
         toolbar_layout.addWidget(btn_add_folder)
-        
-        self.btn_whatsapp = QPushButton("📱 WhatsApp")
-        self.btn_whatsapp.setStyleSheet("font-weight: bold; color: #ffffff; background-color: #25D366; border: none; padding: 5px 10px;")
-        self.btn_whatsapp.clicked.connect(self.on_whatsapp_import)
-        toolbar_layout.addWidget(self.btn_whatsapp)
         
         toolbar_layout.addWidget(btn_remove)
         toolbar_layout.addWidget(btn_remove_all)
@@ -588,11 +582,7 @@ class MainWindow(QMainWindow):
             self.settings.set_last_folder(folder)
             self.add_paths([folder])
 
-    def on_whatsapp_import(self):
-        dlg = WhatsAppDialog(self)
-        dlg.files_imported.connect(self.add_paths)
-        dlg.exec()
-            
+
     def on_files_dropped(self, paths):
         self.add_paths(paths)
 
