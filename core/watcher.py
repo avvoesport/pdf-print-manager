@@ -13,14 +13,20 @@ class DownloadsWatcher(QThread):
         self.enabled = False
         self.downloads_dir = Path(os.path.expanduser("~/Downloads"))
         self.processed_files = set()
-        
-        # Pre-populate processed files to avoid importing old files
-        if self.downloads_dir.exists():
-            for f in self.downloads_dir.iterdir():
-                if f.is_file():
-                    self.processed_files.add(f.name)
+        self._initialized = False
 
     def run(self):
+        # Pre-populate processed files on background thread (avoids UI freeze)
+        if not self._initialized:
+            if self.downloads_dir.exists():
+                try:
+                    for f in self.downloads_dir.iterdir():
+                        if f.is_file():
+                            self.processed_files.add(f.name)
+                except Exception:
+                    pass
+            self._initialized = True
+        
         while self.running:
             if self.enabled:
                 try:

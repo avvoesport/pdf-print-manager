@@ -168,6 +168,19 @@ class FileFilterProxyModel(QSortFilterProxyModel):
                 
         return text_match and date_match
 
+
+class PrinterListWorker(QThread):
+    """Background worker to enumerate available printers without blocking UI."""
+    printers_ready = Signal(list)  # emits list of printer name strings
+
+    def run(self):
+        try:
+            names = [p.printerName() for p in QPrinterInfo.availablePrinters()]
+            self.printers_ready.emit(names)
+        except Exception:
+            self.printers_ready.emit([])
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -419,8 +432,29 @@ class MainWindow(QMainWindow):
         
 
     def populate_printers(self):
-        for printer in QPrinterInfo.availablePrinters():
-            self.combo_printers.addItem(printer.printerName())
+        """Load printers in background so UI doesn't freeze on startup."""
+        self.combo_printers.addItem("Loading...")
+        self.combo_printers.setEnabled(False)
+        self._printer_list_worker = PrinterListWorker()
+        self._printer_list_worker.printers_ready.connect(self._on_printers_ready)
+        self._printer_list_worker.start()
+
+    def _on_printers_ready(self, names):
+        """Called when background printer enumeration finishes."""
+        self.combo_printers.clear()
+        for name in names:
+            self.combo_printers.addItem(name)
+        self.combo_printers.setEnabled(True)
+        
+        # Now restore saved printer selection
+        printer = self.settings.get_printer_name()
+        if printer:
+            idx = self.combo_printers.findText(printer)
+            if idx >= 0:
+                self.combo_printers.setCurrentIndex(idx)
+        
+        # Trigger paper source load now that a printer is selected
+        self.populate_paper_sources()
 
     def populate_paper_sources(self):
         """Initial synchronous populate (used at startup)."""
@@ -460,11 +494,7 @@ class MainWindow(QMainWindow):
             self._pending_paper_source_id = None
 
     def load_settings_to_ui(self):
-        printer = self.settings.get_printer_name()
-        if printer:
-            idx = self.combo_printers.findText(printer)
-            if idx >= 0: self.combo_printers.setCurrentIndex(idx)
-            
+        # Printer selection is handled asynchronously by _on_printers_ready
         color = self.settings.get_color_mode()
         if color == "Color": self.radio_color.setChecked(True)
         else: self.radio_bw.setChecked(True)
@@ -479,7 +509,6 @@ class MainWindow(QMainWindow):
         self.combo_layout.setCurrentText(self.settings.get_layout_mode())
         self.spin_copies.setValue(self.settings.get_copies())
         
-        self.populate_paper_sources()
         # Paper source is restored asynchronously after sources load
         self._pending_paper_source_id = self.settings.get_paper_source_id()
         
@@ -496,7 +525,9 @@ class MainWindow(QMainWindow):
             self.watcher.enabled = auto_import
 
     def save_settings_from_ui(self):
-        self.settings.set_printer_name(self.combo_printers.currentText())
+        printer_name = self.combo_printers.currentText()
+        if printer_name and printer_name != "Loading...":
+            self.settings.set_printer_name(printer_name)
         self.settings.set_color_mode("Color" if self.radio_color.isChecked() else "Black & White")
         self.settings.set_duplex_mode(self.combo_duplex.currentText())
         self.settings.set_paper_size(self.combo_paper.currentText())
