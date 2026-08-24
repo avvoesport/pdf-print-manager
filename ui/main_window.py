@@ -35,8 +35,14 @@ class PrinterInfoWorker(QThread):
 
     def run(self):
         try:
+            if not self.printer_name or self.printer_name in ("Loading...", "None"):
+                self.sources_ready.emit([("Auto", 6)])
+                return
             from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
             info = QPrinterInfo.printerInfo(self.printer_name)
+            if info.isNull():
+                self.sources_ready.emit([("Auto", 6)])
+                return
             p = QPrinter(info)
             sources = p.supportedPaperSources()
 
@@ -427,14 +433,18 @@ class MainWindow(QMainWindow):
 
     def populate_printers(self):
         """Load printers in background so UI doesn't freeze on startup."""
+        self.combo_printers.blockSignals(True)
+        self.combo_printers.clear()
         self.combo_printers.addItem("Loading...")
         self.combo_printers.setEnabled(False)
+        self.combo_printers.blockSignals(False)
         self._printer_list_worker = PrinterListWorker()
         self._printer_list_worker.printers_ready.connect(self._on_printers_ready)
         self._printer_list_worker.start()
 
     def _on_printers_ready(self, names):
         """Called when background printer enumeration finishes."""
+        self.combo_printers.blockSignals(True)
         self.combo_printers.clear()
         for name in names:
             self.combo_printers.addItem(name)
@@ -446,13 +456,13 @@ class MainWindow(QMainWindow):
             idx = self.combo_printers.findText(printer)
             if idx >= 0:
                 self.combo_printers.setCurrentIndex(idx)
+        self.combo_printers.blockSignals(False)
         
         # Trigger paper source load now that a printer is selected
-        self.populate_paper_sources()
+        self.on_printer_changed()
 
     def populate_paper_sources(self):
         """Initial synchronous populate (used at startup)."""
-        # Trigger async load
         self.on_printer_changed()
 
     def on_paper_changed(self):
@@ -463,7 +473,7 @@ class MainWindow(QMainWindow):
     def on_printer_changed(self):
         """Load paper sources in background so UI doesn't freeze."""
         printer_name = self.combo_printers.currentText()
-        if not printer_name:
+        if not printer_name or printer_name in ("Loading...", "None"):
             return
         self.combo_paper_source.clear()
         self.combo_paper_source.addItem("Loading...", None)

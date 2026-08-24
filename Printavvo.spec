@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
 
+qdarktheme_datas = collect_data_files('qdarktheme')
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['D:\\CLi\\Kaliber\\Print'],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=qdarktheme_datas,
+    hiddenimports=['qdarktheme', 'PySide6.QtSvg', 'PySide6.QtPrintSupport'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
